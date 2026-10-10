@@ -1,0 +1,48 @@
+{
+  "host": "0.0.0.0",
+  "port": 7000,
+  "allowedOrigins": [
+    "http://localhost:*",
+    "http://127.0.0.1:*"
+  ],
+  "trustProxy": false,
+  "maxConnectionsPerIp": 8,
+  "maxConnections": 1000,
+  "servers": [
+    {
+      "id": "eu-casual",
+      "name": "EU Central (Casual)",
+      "host": "eu.projectignis.org",
+      "port": 7912,
+      "roomListUrl": "http://eu.projectignis.org:7923/api/getrooms"
+    },
+    {
+      "id": "eu-competitive",
+      "name": "EU Central (Competitive)",
+      "host": "eu.projectignis.org",
+      "port": 7911,
+      "roomListUrl": "http://eu.projectignis.org:7922/api/getrooms"
+    },
+    {
+      "id": "us-casual",
+      "name": "US West (Casual)",
+      "host": "us.projectignis.org",
+      "port": 7911,
+      "roomListUrl": "http://us.projectignis.org:7922/api/getrooms"
+    },
+    {
+      "id": "us-competitive",
+      "name": "US West (Competitive)",
+      "host": "us.projectignis.org",
+      "port": 7912,
+      "roomListUrl": "http://us.projectignis.org:7923/api/getrooms"
+    },
+    {
+      "id": "asia",
+      "name": "Asia Central (Casual/Competitive)",
+      "host": "ignis-duel.ygopro.cn",
+      "port": 44444,
+      "roomListUrl": "https://ignis-room.ygopro.cn/api/getrooms"
+    }
+  ]
+}

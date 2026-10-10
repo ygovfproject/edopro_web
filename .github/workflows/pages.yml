@@ -1,0 +1,98 @@
+# Builds web/ as a static site and publishes it to GitHub Pages.
+#
+# One-time setup in the GitHub repo:
+#   1. Settings → Pages → Build and deployment → Source: "GitHub Actions".
+#   2. Settings → Secrets and variables → Actions → Variables tab → add
+#      PROXY_URL = https://<your-proxy-host>   (e.g. the Oracle sslip.io URL)
+#   3. Add https://<owner>.github.io to "allowedOrigins" in the proxy config.
+#
+# Any other NEXT_PUBLIC_* value from web/.env can be overridden the same way
+# with a repository variable of the same name minus the prefix
+# (CARD_IMAGE_URL, CARD_BACK_URL, DATABASES, STRINGS_URL, BANLISTS).
+# Unset variables fall back to web/.env.
+
+name: Deploy web to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: web/yarn.lock
+
+      # Gives the sub-path the site is served from: "/<repo>" for project
+      # pages, "" for <owner>.github.io repos or a custom domain.
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        run: |
+          yarn install --frozen-lockfile
+          node scripts/copy-sqljs.mjs
+
+      - name: Write build environment
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          PROXY_URL: ${{ vars.PROXY_URL }}
+          CARD_IMAGE_URL: ${{ vars.CARD_IMAGE_URL }}
+          CARD_BACK_URL: ${{ vars.CARD_BACK_URL }}
+          DATABASES: ${{ vars.DATABASES }}
+          STRINGS_URL: ${{ vars.STRINGS_URL }}
+          BANLISTS: ${{ vars.BANLISTS }}
+        # Only set values go into .env.production.local, which overrides .env.
+        run: |
+          : > .env.production.local
+          echo "NEXT_PUBLIC_BASE_PATH=${BASE_PATH}" >> .env.production.local
+          echo "NEXT_PUBLIC_SOURCE_URL=${SOURCE_URL}" >> .env.production.local
+          for k in PROXY_URL CARD_IMAGE_URL CARD_BACK_URL DATABASES STRINGS_URL BANLISTS; do
+            v="${!k}"
+            if [ -n "$v" ]; then echo "NEXT_PUBLIC_${k}=${v}" >> .env.production.local; fi
+          done
+          if [ -z "$PROXY_URL" ]; then
+            echo "::warning::PROXY_URL repository variable is not set; the site will try http://localhost:7000."
+          fi
+          cat .env.production.local
+
+      - name: Build
+        run: yarn build
+
+      # Pages serves files as-is; skip Jekyll so the _next/ folder is published.
+      - run: touch out/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

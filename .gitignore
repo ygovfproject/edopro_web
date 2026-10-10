@@ -1,0 +1,38 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+web/public/sqljs/
+next-env.d.ts
+*.tsbuildinfo
+
+# Local config (copy web/.env.example to web/.env); the example stays committed
+.env
+.env.local
+.env*.local
+
+# Terraform: state, local vars and provider cache
+# (.terraform.lock.hcl stays committed so provider versions are pinned)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+*.tfplan
+
+# Keys and credentials
+*.pem
+*.key
+.oci/
+
+# Logs and OS/editor junk
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
