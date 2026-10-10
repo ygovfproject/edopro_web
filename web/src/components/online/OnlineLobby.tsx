@@ -144,7 +144,7 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
         }
         setServerId(j.servers.find((s) => s.id === saved)?.id ?? j.servers[0]?.id ?? "");
       })
-      .catch(() => router.replace("/500"));
+      .catch(() => router.replace("/server-error"));
   }, [proxy, router]);
 
   const refresh = useCallback(async () => {
@@ -156,12 +156,12 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
         r = await fetch(`${proxy}/api/servers/${encodeURIComponent(serverId)}/rooms`);
       } catch {
         // The proxy itself is unreachable.
-        router.replace("/500");
+        router.replace("/server-error");
         return;
       }
       // 502 = that EDOPro server's room list is down; other servers may still work.
       if (r.status >= 500 && r.status !== 502) {
-        router.replace("/500");
+        router.replace("/server-error");
         return;
       }
       const j = await r.json();
