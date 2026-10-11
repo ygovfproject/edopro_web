@@ -50,7 +50,7 @@ NEXT_PUBLIC_PROXY_URL=https://1-2-3-4.sslip.io
   proxy code, config (built from `terraform.tfvars`), the systemd service and the
   maintenance timer over SSH and restarts the proxy, whenever any of them changed. It uses
   `ssh_private_key_path` (default `~/.ssh/id_ed25519`). It changes nothing in Oracle Cloud and
-  never replaces the VM. `.\update-proxy.ps1 -Ip <public_ip>` still copies just the code.
+  never replaces the VM.
   Don't edit `/opt/edopro-proxy/config.json` by hand: the next apply overwrites it.
 - **Accounts database**: `/var/lib/edopro-proxy/accounts.db` (owned by the service user,
   not reachable over the network; no extra ports are opened).

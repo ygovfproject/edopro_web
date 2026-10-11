@@ -150,10 +150,12 @@ async headers() {
 
 ## Accounts and cloud decks
 
-Players can create an account and keep up to 10 decks on the server, to load them on any
-device (Decks tab → **Cloud decks**). Decks stored in the browser keep working without an
-account. The API is part of the proxy (`proxy/src/accounts.mjs`) and is on when the proxy
-config has `"accounts": { "dbPath": "data/accounts.db" }`.
+Without an account you are a guest (named `edopro_web_` plus 6 random characters) and can
+only watch duels in progress. Signing in lets you host and join duels; your username is your
+duelist name, and your decks (up to 10) are kept on the server, not in the browser, so they
+are the same on every device. The API is part of the proxy (`proxy/src/accounts.mjs`) and is
+on when the proxy config has `"accounts": { "dbPath": "data/accounts.db" }`; without it,
+everyone is a guest.
 
 - **Storage**: one SQLite file (Node's built-in `node:sqlite`, no extra packages) with
   tables `users`, `sessions` and `decks`. Schema migrations run on startup
@@ -227,8 +229,7 @@ DELETE /api/decks/:id                            -> 204
   and remembers it.
 - **Scope.** Online only: room list, host, join, spectate, Single/Match (with side
   decking), rematch, chat. No AI, LAN, replays or deck editor. Decks come from `.ydk`
-  files or `ydke://` links and are kept in the browser's local storage, and optionally
-  in the cloud (see above).
+  files or `ydke://` links and are stored with your account (see above).
 
 ## Project layout
 

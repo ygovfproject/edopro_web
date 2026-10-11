@@ -174,7 +174,7 @@ resource "oci_core_instance" "proxy" {
   }
 
   # Cloud-init only runs on first boot, and a new instance would get a new IP
-  # (and a new sslip.io hostname). Update the proxy code with update-proxy.ps1 instead.
+  # (and a new sslip.io hostname). Proxy updates go through terraform_data.proxy_deploy instead.
   lifecycle {
     ignore_changes = [metadata, source_details]
   }
