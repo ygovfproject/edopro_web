@@ -1,84 +1,21 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
-<svg
-   width="100"
-   height="100"
-   viewBox="0 0 26.458333 26.458333"
-   version="1.1"
-   id="svg1"
-   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
-   sodipodi:docname="synchro-ring.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#b1b1b1"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#ffffff"
-     inkscape:document-units="mm"
-     showguides="false"
-     inkscape:zoom="5.9213249"
-     inkscape:cx="37.069407"
-     inkscape:cy="58.348428"
-     inkscape:window-width="2560"
-     inkscape:window-height="1377"
-     inkscape:window-x="1072"
-     inkscape:window-y="263"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" />
-  <defs
-     id="defs1">
-    <filter
-       inkscape:collect="always"
-       style="color-interpolation-filters:sRGB"
-       id="filter3"
-       x="-0.096106799"
-       y="-0.096106799"
-       width="1.1922136"
-       height="1.1922136">
-      <feGaussianBlur
-         inkscape:collect="always"
-         stdDeviation="0.88998902"
-         id="feGaussianBlur3" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!--
+    Synchro ring, drawn for Tuners while picking materials and in the Synchro Summon.
+    Replace this file to change how the rings look. The ring itself should fill about
+    80% of the canvas (the rest is room for its glow); the app sizes the image so that
+    80% is a bit smaller than a field cell.
+  -->
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3.2" result="blur" />
+      <feFlood flood-color="#39ff14" />
+      <feComposite in2="blur" operator="in" result="green" />
+      <feMerge>
+        <feMergeNode in="green" />
+        <feMergeNode in="green" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
     </filter>
   </defs>
-  <g
-     inkscape:label="Слой 1"
-     inkscape:groupmode="layer"
-     id="layer1">
-    <path
-       id="path1"
-       style="fill:#00ff00;fill-opacity:1;stroke-width:0.298225;filter:url(#filter3)"
-       d="M 13.229167 2.1166667 A 11.1125 11.1125 0 0 0 2.1166667 13.229167 A 11.1125 11.1125 0 0 0 13.229167 24.341667 A 11.1125 11.1125 0 0 0 24.341667 13.229167 A 11.1125 11.1125 0 0 0 13.229167 2.1166667 z M 13.229167 2.38125 A 10.847917 10.847917 0 0 1 24.077083 13.229167 A 10.847917 10.847917 0 0 1 13.229167 24.077083 A 10.847917 10.847917 0 0 1 2.38125 13.229167 A 10.847917 10.847917 0 0 1 13.229167 2.38125 z M 13.229167 3.175 A 10.054167 10.054167 0 0 0 3.175 13.229167 A 10.054167 10.054167 0 0 0 13.229167 23.283333 A 10.054167 10.054167 0 0 0 23.283333 13.229167 A 10.054167 10.054167 0 0 0 13.229167 3.175 z M 13.229167 3.4395833 A 9.7895832 9.7895832 0 0 1 23.01875 13.229167 A 9.7895832 9.7895832 0 0 1 13.229167 23.01875 A 9.7895832 9.7895832 0 0 1 3.4395833 13.229167 A 9.7895832 9.7895832 0 0 1 13.229167 3.4395833 z " />
-    <path
-       id="path3"
-       style="fill:#ffffff;fill-opacity:1;stroke-width:0.298225"
-       d="M 13.229167 2.1166667 A 11.1125 11.1125 0 0 0 2.1166667 13.229167 A 11.1125 11.1125 0 0 0 13.229167 24.341667 A 11.1125 11.1125 0 0 0 24.341667 13.229167 A 11.1125 11.1125 0 0 0 13.229167 2.1166667 z M 13.229167 2.38125 A 10.847917 10.847917 0 0 1 24.077083 13.229167 A 10.847917 10.847917 0 0 1 13.229167 24.077083 A 10.847917 10.847917 0 0 1 2.38125 13.229167 A 10.847917 10.847917 0 0 1 13.229167 2.38125 z M 13.229167 3.175 A 10.054167 10.054167 0 0 0 3.175 13.229167 A 10.054167 10.054167 0 0 0 13.229167 23.283333 A 10.054167 10.054167 0 0 0 23.283333 13.229167 A 10.054167 10.054167 0 0 0 13.229167 3.175 z M 13.229167 3.4395833 A 9.7895832 9.7895832 0 0 1 23.01875 13.229167 A 9.7895832 9.7895832 0 0 1 13.229167 23.01875 A 9.7895832 9.7895832 0 0 1 3.4395833 13.229167 A 9.7895832 9.7895832 0 0 1 13.229167 3.4395833 z " />
-    <path
-       id="path1-2"
-       style="display:none;fill:#ffffff;fill-opacity:1;stroke-width:0.284024"
-       d="M 13.229167,2.6458333 A 10.583333,10.583333 0 0 0 2.6458333,13.229167 10.583333,10.583333 0 0 0 13.229167,23.8125 10.583333,10.583333 0 0 0 23.8125,13.229167 10.583333,10.583333 0 0 0 13.229167,2.6458333 Z m 0,0.2645834 A 10.31875,10.31875 0 0 1 23.547917,13.229167 10.31875,10.31875 0 0 1 13.229167,23.547917 10.31875,10.31875 0 0 1 2.9104167,13.229167 10.31875,10.31875 0 0 1 13.229167,2.9104167 Z" />
-    <rect
-       style="display:none;fill:#ffffff;fill-opacity:1;stroke-width:0.270999"
-       id="rect2"
-       width="26.458334"
-       height="4.2333331"
-       x="0"
-       y="11.1125" />
-    <rect
-       style="display:none;fill:#ffffff;fill-opacity:1;stroke-width:0.270999"
-       id="rect3"
-       width="26.458334"
-       height="4.2333331"
-       x="-2.3841858e-07"
-       y="-15.345834"
-       transform="rotate(90)" />
-  </g>
+  <circle cx="50" cy="50" r="40" fill="none" stroke="#ffffff" stroke-width="3.5" filter="url(#glow)" />
 </svg>
