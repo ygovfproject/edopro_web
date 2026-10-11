@@ -1,0 +1,100 @@
+#!/bin/bash
+# Installs or updates the EDOPro web proxy on the server: code, config, the systemd
+# service, and the daily accounts maintenance (inactive-account cleanup + database
+# backup). Rendered by Terraform; run as root by cloud-init on first boot and by the
+# "proxy_deploy" step of `terraform apply` afterwards. Safe to run again.
+set -euo pipefail
+
+APP=/opt/edopro-proxy
+# Accounts database and its daily backups (created by systemd's StateDirectory).
+DATA=/var/lib/edopro-proxy
+
+# The accounts database needs node:sqlite (Node 22.13+). Servers set up earlier may
+# have an older Node 22; upgrade it from the NodeSource repository that setup added.
+if ! /usr/bin/node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' 2>/dev/null; then
+  echo "Upgrading Node.js (need 22.13 or newer)"
+  [ -f /etc/apt/sources.list.d/nodesource.list ] || [ -f /etc/apt/sources.list.d/nodesource.sources ] || curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get update -q
+  apt-get install -y -q nodejs
+fi
+
+id edoproxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin edoproxy
+mkdir -p "$APP/src"
+rm -f "$APP"/src/*.mjs
+
+%{ for name, content in files ~}
+echo '${content}' | base64 -d | gunzip > "$APP/${name}"
+%{ endfor ~}
+
+cat > /etc/systemd/system/edopro-proxy.service <<'UNIT'
+[Unit]
+Description=EDOPro web proxy (WebSocket bridge, room lists, accounts and cloud decks)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=edoproxy
+WorkingDirectory=/opt/edopro-proxy
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.mjs config.json
+Restart=always
+RestartSec=2
+StateDirectory=edopro-proxy
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > /etc/systemd/system/edopro-maintenance.service <<'UNIT'
+[Unit]
+Description=EDOPro accounts maintenance: delete accounts inactive for 90 days, back up the database
+
+[Service]
+Type=oneshot
+User=edoproxy
+WorkingDirectory=/opt/edopro-proxy
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/maintenance.mjs config.json
+StateDirectory=edopro-proxy
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UNIT
+
+cat > /etc/systemd/system/edopro-maintenance.timer <<'UNIT'
+[Unit]
+Description=Daily EDOPro accounts maintenance
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+chown -R edoproxy:edoproxy "$APP"
+# The config holds no secrets, but nobody else needs to read it.
+chmod 640 "$APP/config.json"
+
+systemctl daemon-reload
+systemctl enable edopro-proxy >/dev/null
+systemctl restart edopro-proxy
+systemctl enable --now edopro-maintenance.timer >/dev/null
+
+# Wait for the proxy to answer, so a broken deploy fails here and not silently.
+for i in $(seq 1 15); do
+  if curl -fsS http://127.0.0.1:7000/healthz >/dev/null 2>&1; then
+    echo "edopro-proxy is up"
+    exit 0
+  fi
+  sleep 1
+done
+echo "edopro-proxy did not start; see: journalctl -u edopro-proxy -n 50" >&2
+exit 1

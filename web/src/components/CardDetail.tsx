@@ -44,8 +44,9 @@ export default function CardDetail({ code, live, imageWidth = 180 }: Props) {
   const attr = res!.attributeNames(live?.hasStats ? live.attribute : info.attribute).join("/");
   const counters = live ? Object.entries(live.counters) : [];
   return (
-    <Stack spacing={1} sx={{ p: 1, minWidth: 0 }}>
-      <Box sx={{ alignSelf: "center" }}>
+    // Fills its panel; only the card text scrolls.
+    <Stack spacing={1} sx={{ p: 1, minWidth: 0, height: "100%", minHeight: 0, boxSizing: "border-box" }}>
+      <Box sx={{ alignSelf: "center", flex: "0 0 auto" }}>
         <CardImage code={code} width={imageWidth} />
       </Box>
       <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
@@ -73,7 +74,7 @@ export default function CardDetail({ code, live, imageWidth = 180 }: Props) {
       {live && live.overlays.length > 0 && (
         <Typography variant="caption">Materials: {live.overlays.map((o) => (o.code ? res!.cards.name(o.code) : "?")).join(", ")}</Typography>
       )}
-      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.35 }}>
+      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.35, flex: "1 1 auto", minHeight: 40, overflowY: "auto", pr: 0.5 }}>
         {info.desc}
       </Typography>
       <Typography variant="caption" color="text.disabled">

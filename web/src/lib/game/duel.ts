@@ -4,7 +4,23 @@
 // ClientField does.
 
 import { OcgMessageType, type ServerMessage } from "../protocol/gamemsg";
-import { motion, type AppearStyle } from "./motion";
+import {
+  BIG_IMPACT_LEVEL,
+  BUMP_MS,
+  DROP_MS,
+  FADE_IN_HOLD,
+  FADE_MS,
+  FLY_MS,
+  MATERIAL_HOLD,
+  NEON_BLUE,
+  NEON_GREEN,
+  PAUSE_MS,
+  attributeColor,
+  motion,
+  summonTimeline,
+  type ExtraSummon,
+  type PickForm,
+} from "./motion";
 import type { CardQuery } from "../protocol/query";
 
 export const LOC = {
@@ -145,6 +161,8 @@ export interface ChainLink {
   description: bigint;
   card: DuelCard | null;
   negated: boolean;
+  /** Cards this link targets (MSG_BECOME_TARGET while it was activated). */
+  targets: DuelCard[];
 }
 
 export interface LogEntry {
@@ -152,6 +170,8 @@ export interface LogEntry {
   text: string;
   codes: number[];
   player?: number;
+  /** "turn": a new turn or phase (shown in red). */
+  kind?: "turn";
 }
 
 /** A card shown to the player (confirmations, coin tosses...). */
@@ -173,30 +193,32 @@ export interface FxCard {
   sideways: boolean;
 }
 
-export type SummonFx = "fusion" | "synchro" | "xyz" | "link";
+export type SummonFx = ExtraSummon;
 
 /** A one-off board animation. */
 export interface Fx extends FxCard {
   id: number;
-  kind: "spsummon" | SummonFx | "destroy" | "battle";
-  /** Fusion/Synchro/Xyz/Link: the materials, animated where they were. */
+  kind: SummonFx | "material" | "destroy" | "battle" | "glow" | "impact" | "bump";
+  /** Bump: the attack target (DuelCard id), or none for a direct attack at `toPlayer`. */
+  targetId?: number;
+  toPlayer?: number;
+  /** Glow: the zone, its colour, when it starts (ms) and whether the card in it blinks. */
+  zone?: { player: number; location: number; sequence: number };
+  color?: string;
+  delay?: number;
+  blink?: boolean;
+  /** Impact: 1 normal, 2 big (Level 7+). */
+  tier?: 1 | 2;
+  /** Fusion/Synchro/Xyz/Link summon: the materials used. */
   materials?: FxCard[];
   /** Link: the monster's Link Arrows. */
   linkMarker?: number;
-  /** Plain Special Summon: ring colour (blue for Ritual Summons). */
-  ring?: "gold" | "blue";
-  /** Plain Special Summon: the card flew in from the hand (otherwise it fades in). */
-  fromHand?: boolean;
+  /** Which way "above the zone" is on screen (see LandPlan.dir). */
+  dir?: 1 | -1;
+  /** Material: how it looks while it leaves, and whether it was already shown like that while picked. */
+  form?: PickForm;
+  previewed?: boolean;
 }
-
-/** How long a summoned Extra Deck monster stays hidden while its effect plays, ms. */
-export const SUMMON_REVEAL: Record<SummonFx, number> = { fusion: 520, synchro: 480, xyz: 900, link: 800 };
-/** How the summoned monster then shows up. */
-const SUMMON_APPEAR: Record<SummonFx, AppearStyle> = { fusion: "twist", synchro: "fade", xyz: "fade", link: "pop" };
-/** How long materials stay hidden in their new pile while they vanish on the field, ms. */
-export const MATERIAL_HOLD: Record<SummonFx, number> = { fusion: 520, synchro: 480, xyz: 620, link: 480 };
-/** A plain Special Summon from anywhere but the hand fades in after this long, ms. */
-export const FADE_IN_HOLD = 120;
 
 const REASON = {
   DESTROY: 0x1,
@@ -209,6 +231,12 @@ const REASON = {
   XYZ: 0x200000,
   LINK: 0x10000000,
 } as const;
+function popcount(n: number) {
+  let c = 0;
+  for (let x = n >>> 0; x; x &= x - 1) c++;
+  return c;
+}
+
 function materialKind(reason: number): SummonFx | null {
   return reason & REASON.LINK
     ? "link"
@@ -221,7 +249,20 @@ function materialKind(reason: number): SummonFx | null {
           : null;
 }
 
-const TYPE_BITS = { FUSION: 0x40, SYNCHRO: 0x2000, XYZ: 0x800000, LINK: 0x4000000 } as const;
+const TYPE_BITS = {
+  MONSTER: 0x1,
+  SPELL: 0x2,
+  TRAP: 0x4,
+  FUSION: 0x40,
+  TUNER: 0x1000,
+  SYNCHRO: 0x2000,
+  XYZ: 0x800000,
+  LINK: 0x4000000,
+} as const;
+/** Select hints (HINTMSG_*) the Synchro / Xyz / Link procedures use while you pick materials. */
+const MATERIAL_HINTS: Record<string, SummonFx> = { "511": "fusion", "512": "synchro", "513": "xyz", "533": "link" };
+/** Zone glow when a card activates or its chain link resolves. */
+const ACTIVATE_COLORS = { monster: "#ffffff", spell: "#9ff5a6", trap: "#ff9fd2" };
 
 export interface Formatter {
   name(code: number): string;
@@ -229,7 +270,7 @@ export interface Formatter {
   phase(phase: number): string;
   winReason(reason: number): string;
   /** Card data from the database, if loaded. */
-  info?(code: number): { type: number; linkMarker: number } | undefined;
+  info?(code: number): { type: number; linkMarker: number; level: number; attribute: number } | undefined;
 }
 
 const defaultFormatter: Formatter = {
@@ -258,6 +299,8 @@ export class DuelState {
   phase = 0;
   chain: ChainLink[] = [];
   solvingChain = 0;
+  /** True between MSG_CHAINING and MSG_CHAINED: targets chosen now belong to the newest link. */
+  private chainBuilding = false;
   disabledZones = 0;
   /** Current attack; `target` is null for a direct attack. Cleared when either card leaves the field. */
   attack: { from: LocationRef; to: LocationRef | null; attacker: DuelCard | null; target: DuelCard | null } | null = null;
@@ -268,6 +311,10 @@ export class DuelState {
   private materials: { at: number; reason: number; card: FxCard }[] = [];
   /** Cards that already got a summon animation from their MOVE. */
   private summonFxCards = new Set<number>();
+  /** How long (ms) the client should hold the next messages while a summon animation plays. */
+  private hold = 0;
+  /** Materials you have picked so far for a Synchro/Xyz/Link Summon, and how they look meanwhile. */
+  materialPicks = new Map<number, PickForm>();
   private msgCount = 0;
   winner: { player: number; reason: number } | null = null;
   waiting = false;
@@ -391,8 +438,8 @@ export class DuelState {
     this.reindex(list);
   }
 
-  private addLog(text: string, codes: number[] = [], player?: number) {
-    this.log.push({ id: ++this.logId, text, codes, player });
+  private addLog(text: string, codes: number[] = [], player?: number, kind?: LogEntry["kind"]) {
+    this.log.push({ id: ++this.logId, text, codes, player, kind });
     if (this.log.length > 300) this.log.splice(0, this.log.length - 300);
   }
 
@@ -405,31 +452,138 @@ export class DuelState {
     if (this.fx.length > 40) this.fx.splice(0, this.fx.length - 40);
   }
 
-  /** A monster was Special Summoned: pick its animation from its materials, or its type. */
-  private summonFx(card: DuelCard, from: LocationRef, controller: number, code: number) {
+  /** How a card looks as a material for this kind of summon (see PickForm). */
+  private materialForm(kind: SummonFx, card: DuelCard, code: number): PickForm {
+    const info = this.fmt.info?.(code || card.code);
+    const level = Math.max(1, (card.hasStats ? card.level : 0) || (info?.level ?? 0) || 1);
+    switch (kind) {
+      case "synchro":
+        return (info?.type ?? card.type) & TYPE_BITS.TUNER
+          ? { shape: "rings", count: level, color: NEON_GREEN }
+          : { shape: "spheres", count: level, color: NEON_GREEN };
+      case "xyz":
+        return { shape: "sphere", count: 1, color: attributeColor((card.hasStats ? card.attribute : 0) || (info?.attribute ?? 0)) };
+      case "link":
+        // Link: the card stays, turned white with a blue glow.
+        return { shape: "glow", count: 1, color: NEON_BLUE };
+      default:
+        return { shape: "swirl", count: 1, color: "#b58cff" };
+    }
+  }
+
+  /** The material prompt changed: the picked cards are the ones you can unselect. */
+  syncMaterialPicks(msg: ServerMessage) {
+    const kind = MATERIAL_HINTS[String(this.selectHint)];
+    if (msg.type === OcgMessageType.SELECT_UNSELECT_CARD && kind && kind !== "fusion") {
+      const next = new Map<number, PickForm>();
+      for (const ref of msg.unselect_cards as (LocationRef & { code?: number })[]) {
+        const card = this.getCard(ref);
+        if (card && card.location & LOC.ONFIELD) next.set(card.id, this.materialForm(kind, card, ref.code ?? 0));
+      }
+      this.materialPicks = next;
+    } else if (this.materialPicks.size) {
+      // Another kind of prompt: the selection was cancelled (picked cards turn back).
+      this.materialPicks = new Map();
+    }
+    this.rev++;
+  }
+
+  /** You clicked a card in the material prompt: show it picked (or not) right away. */
+  pickMaterial(ref: LocationRef, picked: boolean) {
+    const kind = MATERIAL_HINTS[String(this.selectHint)];
+    const card = this.getCard(ref);
+    if (!kind || kind === "fusion" || !card || !(card.location & LOC.ONFIELD)) return;
+    const next = new Map(this.materialPicks);
+    if (picked) next.set(card.id, this.materialForm(kind, card, card.code));
+    else next.delete(card.id);
+    this.materialPicks = next;
+    this.rev++;
+  }
+
+  /** A card on the field activated: blink it and light its zone. */
+  private activationGlow(card: DuelCard | null, ref: LocationRef) {
+    if (!(ref.location & LOC.ONFIELD)) return;
+    const t = (card?.hasStats ? card.type : 0) || (this.fmt.info?.(card?.code ?? 0)?.type ?? 0);
+    const color = t & TYPE_BITS.TRAP ? ACTIVATE_COLORS.trap : t & TYPE_BITS.SPELL ? ACTIVATE_COLORS.spell : ACTIVATE_COLORS.monster;
+    this.addFx({
+      kind: "glow",
+      cardId: card?.id ?? 0,
+      code: card?.code ?? 0,
+      controller: ref.controller,
+      faceDown: false,
+      sideways: false,
+      zone: { player: ref.controller, location: ref.location & LOC.ONFIELD, sequence: ref.sequence },
+      color,
+      delay: 0,
+      blink: true,
+    });
+  }
+
+  /**
+   * A monster arrived in a Monster Zone by a summon: plan how it lands (see LandPlan) and
+   * which effects go with it. Normal/Ritual/Special Summons of Main Deck monsters: Level 5+
+   * lifts above the zone and drops with an impact. Fusion/Synchro/Xyz/Link: their own
+   * step-5 animation (see FxOverlay), then the drop.
+   */
+  private summonFx(card: DuelCard, from: LocationRef, to: LocationRef, code: number, reason: number) {
     const recent = this.materials.filter((m) => this.msgCount - m.at < 40);
     this.materials = [];
     const reasons = recent.reduce((acc, m) => acc | m.reason, 0);
     let kind = materialKind(reasons);
     const info = this.fmt.info?.(code);
+    const type = info?.type ?? card.type;
     // Summoned from the face-down Extra Deck without tracked materials (e.g. Contact Fusion).
     if (!kind && from.location === LOC.EXTRA && !((from.position ?? 0) & POS.FACEUP)) {
-      const t = info?.type ?? card.type;
-      kind = t & TYPE_BITS.LINK ? "link" : t & TYPE_BITS.XYZ ? "xyz" : t & TYPE_BITS.SYNCHRO ? "synchro" : t & TYPE_BITS.FUSION ? "fusion" : null;
+      kind = type & TYPE_BITS.LINK ? "link" : type & TYPE_BITS.XYZ ? "xyz" : type & TYPE_BITS.SYNCHRO ? "synchro" : type & TYPE_BITS.FUSION ? "fusion" : null;
     }
-    const base = { cardId: card.id, code, controller, faceDown: false, sideways: false };
+    const dir: 1 | -1 = to.controller === this.me ? -1 : 1;
+    const faceDown = !!((to.position ?? POS.FACEUP_ATTACK) & POS.FACEDOWN);
+    const level = info?.level ?? card.level ?? 0;
+    const base = { cardId: card.id, code, controller: to.controller, faceDown: false, sideways: false };
+    const zone = { player: to.controller, location: LOC.MZONE, sequence: to.sequence };
     this.summonFxCards.add(card.id);
+
     if (!kind) {
-      // Plain (or Ritual) Special Summon: from the hand the card flies in, otherwise it fades in.
+      // Normal Summon, Ritual Summon, or any other Special Summon.
+      if (faceDown) return;
+      const special = !!(reason & REASON.SPSUMMON);
       const fromHand = from.location === LOC.HAND;
-      if (!fromHand) motion.appear.set(card.id, { hold: FADE_IN_HOLD, style: "fade" });
-      this.addFx({ ...base, kind: "spsummon", ring: reasons & REASON.RITUAL ? "blue" : "gold", fromHand });
+      // Any Special Summon that isn't a Fusion/Synchro/Xyz/Link Summon (Monster Reborn on any
+      // monster, from the hand, Pendulum...) and every Normal Summon lifts above the zone,
+      // waits and drops in. Only Level 5+ lands with an impact (ripple), bigger from Level 7.
+      const tier = level >= BIG_IMPACT_LEVEL ? 2 : level >= 5 ? 1 : 0;
+      const arrive = fromHand ? FLY_MS : FADE_IN_HOLD + FADE_MS;
+      const dropAt = arrive + PAUSE_MS;
+      motion.land.set(card.id, { hold: fromHand ? 0 : FADE_IN_HOLD, enter: fromHand ? "fly" : "fade", dropAt, dir });
+      const landed = dropAt + DROP_MS;
+      if (tier > 0) this.addFx({ ...base, kind: "impact", tier: tier as 1 | 2, delay: landed, dir });
+      // Effects that follow (e.g. "when this card is summoned") wait until it has landed.
+      this.hold = Math.max(this.hold, landed + (tier > 0 ? 250 : 80));
+      if (special) {
+        // The zone itself glows: yellow for a Special Summon, blue for a Ritual Summon.
+        this.addFx({ ...base, kind: "glow", zone, color: reasons & REASON.RITUAL ? "#4aa8ff" : "#ffd54f", delay: landed, blink: false });
+      }
       return;
     }
+
     const bit = { fusion: REASON.FUSION, synchro: REASON.SYNCHRO, xyz: REASON.XYZ, link: REASON.LINK }[kind];
     const materials = recent.filter((m) => m.reason & bit).map((m) => m.card);
-    motion.appear.set(card.id, { hold: SUMMON_REVEAL[kind], style: SUMMON_APPEAR[kind] });
-    this.addFx({ ...base, kind, materials, linkMarker: info?.linkMarker ?? card.linkMarker });
+    const linkMarker = info?.linkMarker ?? card.linkMarker;
+    const arrows = Math.max(1, popcount(linkMarker));
+    const tl = summonTimeline(kind, kind === "link" ? arrows : Math.max(1, materials.length));
+    motion.land.set(card.id, { hold: tl.reveal, enter: tl.enter, dropAt: tl.drop, dir });
+    this.addFx({ ...base, kind, materials, linkMarker, dir });
+    const rank = kind === "link" ? popcount(linkMarker) : level;
+    this.addFx({ ...base, kind: "impact", tier: rank >= BIG_IMPACT_LEVEL ? 2 : 1, delay: tl.impact, dir });
+    // Effects that follow (e.g. "when this card is summoned") wait until it has landed.
+    this.hold = Math.max(this.hold, tl.impact + 250);
+  }
+
+  /** Asked by the client after each packet: how long to wait before handling the next one. */
+  takeHold(): number {
+    const h = this.hold;
+    this.hold = 0;
+    return h;
   }
 
   dismissFx(id: number) {
@@ -492,6 +646,13 @@ export class DuelState {
         this.players = [emptyField(), emptyField()];
         this.chain = [];
         this.winner = null;
+        // A new game of the match: nothing from the last one should still animate.
+        this.fx = [];
+        this.reveals = [];
+        this.materials = [];
+        this.summonFxCards.clear();
+        this.materialPicks = new Map();
+        motion.clear();
         this.turn = 0;
         this.phase = 0;
         this.attack = null;
@@ -581,12 +742,12 @@ export class DuelState {
         this.turn++;
         this.turnPlayer = msg.player;
         this.attack = null;
-        this.addLog(`Turn ${this.turn}: ${this.who(msg.player)}`, [], msg.player);
+        this.addLog(`Turn ${this.turn}: ${this.who(msg.player)}`, [], msg.player, "turn");
         break;
       case T.NEW_PHASE:
         this.phase = msg.phase;
         this.attack = null;
-        this.addLog(this.fmt.phase(msg.phase));
+        this.addLog(this.fmt.phase(msg.phase), [], undefined, "turn");
         break;
       case T.DRAW: {
         const f = this.players[msg.player];
@@ -626,9 +787,24 @@ export class DuelState {
         if (msg.reason & REASON.MATERIAL && from.location & (LOC.ONFIELD | LOC.HAND)) {
           const kind = materialKind(msg.reason);
           if (kind) {
-            // Animated where it was, then fades in where it went.
+            // Animated where it was (step 2), then fades in where it went.
             motion.vanish.add(card.id);
-            motion.appear.set(card.id, { hold: MATERIAL_HOLD[kind], style: "fade" });
+            motion.appear.set(card.id, { hold: MATERIAL_HOLD, style: "fade" });
+            const picked = this.materialPicks.get(card.id);
+            if (picked) {
+              this.materialPicks = new Map(this.materialPicks);
+              this.materialPicks.delete(card.id);
+            }
+            this.addFx({
+              kind: "material",
+              cardId: card.id,
+              code: msg.card || card.code,
+              controller: from.controller,
+              faceDown: !!(from.location & LOC.ONFIELD && fromPos & POS.FACEDOWN),
+              sideways: from.location === LOC.MZONE && !!(fromPos & POS.DEFENSE),
+              form: picked ?? this.materialForm(kind, card, msg.card),
+              previewed: !!picked,
+            });
           }
           this.materials.push({
             at: this.msgCount,
@@ -641,8 +817,11 @@ export class DuelState {
               sideways: from.location === LOC.MZONE && !!(fromPos & POS.DEFENSE),
             },
           });
-        } else if (to.location === LOC.MZONE && msg.reason & REASON.SPSUMMON) {
-          this.summonFx(card, from, to.controller, msg.card || card.code);
+        } else if (
+          to.location === LOC.MZONE &&
+          (msg.reason & REASON.SPSUMMON || (from.location === LOC.HAND && !((to.position ?? POS.FACEUP_ATTACK) & POS.FACEDOWN)))
+        ) {
+          this.summonFx(card, from, to, msg.card || card.code, msg.reason);
         }
         if (from.location & LOC.ONFIELD && msg.reason & REASON.DESTROY) {
           const pos = fromPos;
@@ -707,18 +886,7 @@ export class DuelState {
       case T.FLIPSUMMONING: {
         const card = this.getCard(msg as unknown as LocationRef);
         if (card && msg.code) card.code = msg.code;
-        if (card && msg.type === T.SPSUMMONING && !this.summonFxCards.delete(card.id)) {
-          this.addFx({
-            kind: "spsummon",
-            cardId: card.id,
-            code: card.code,
-            controller: card.controller,
-            faceDown: !!(card.position & POS.FACEDOWN),
-            sideways: !!(card.position & POS.DEFENSE),
-            ring: "gold",
-            fromHand: true,
-          });
-        }
+        if (card) this.summonFxCards.delete(card.id);
         const verb = msg.type === T.SUMMONING ? "Normal Summoned" : msg.type === T.SPSUMMONING ? "Special Summoned" : "Flip Summoned";
         this.addLog(`${this.who(msg.controller)} ${verb} ${this.fmt.name(msg.code)}`, [msg.code], msg.controller);
         break;
@@ -727,6 +895,7 @@ export class DuelState {
         const ref = msg as unknown as LocationRef;
         const card = this.getCard(ref);
         if (card && msg.code) card.code = msg.code;
+        this.activationGlow(card, ref);
         this.chain.push({
           code: msg.code,
           controller: msg.triggering_controller,
@@ -735,15 +904,38 @@ export class DuelState {
           description: msg.description,
           card,
           negated: false,
+          targets: [],
         });
+        this.chainBuilding = true;
         this.addLog(`${this.who(msg.triggering_controller)} activated ${this.fmt.name(msg.code)} (chain link ${this.chain.length})`, [msg.code], msg.triggering_controller);
+        break;
+      }
+      case T.CHAINED:
+        this.chainBuilding = false;
+        break;
+      case T.BECOME_TARGET: {
+        // Targets chosen while an effect is being activated: log them and bind them to it.
+        const link = this.chainBuilding ? this.chain[this.chain.length - 1] : undefined;
+        const targets = msg.cards.map((ref) => this.getCard(ref as LocationRef)).filter((c): c is DuelCard => !!c);
+        if (!targets.length) break;
+        if (link) for (const t of targets) if (!link.targets.includes(t)) link.targets.push(t);
+        const named = targets.map((t) => this.targetName(t));
+        const codes = [link?.code ?? 0, ...targets.map((t) => (this.isKnown(t) ? t.code : 0))].filter(Boolean);
+        this.addLog(
+          link ? `${this.fmt.name(link.code)} targets ${named.join(", ")}` : `Targeted: ${named.join(", ")}`,
+          codes,
+          link?.controller,
+        );
         break;
       }
       case T.CHAIN_SOLVING:
         this.solvingChain = msg.chain_size;
+        this.chainBuilding = false;
         break;
       case T.CHAIN_SOLVED:
         this.solvingChain = 0;
+        // The resolved link (always the highest one left) loses its badge.
+        if (this.chain.length >= msg.chain_size) this.chain = this.chain.slice(0, msg.chain_size - 1);
         break;
       case T.CHAIN_NEGATED:
       case T.CHAIN_DISABLED: {
@@ -758,6 +950,7 @@ export class DuelState {
       case T.CHAIN_END:
         this.chain = [];
         this.solvingChain = 0;
+        this.chainBuilding = false;
         break;
       case T.SHUFFLE_DECK: {
         for (const c of this.players[msg.player].deck) {
@@ -913,6 +1106,28 @@ export class DuelState {
         this.attack = null;
         this.addLog("The attack was negated");
         break;
+      case T.DAMAGE_STEP_START: {
+        // The battle step is over: the arrow goes and the attacker rushes into its target
+        // (or at the opponent for a direct attack) and back. Damage waits for it.
+        const atk = this.attack;
+        // A target that left the field (replay) means no bump; a real direct attack bumps the player.
+        if (atk?.attacker && atk.attacker.location === LOC.MZONE && (atk.target || !atk.to)) {
+          const a = atk.attacker;
+          this.addFx({
+            kind: "bump",
+            cardId: a.id,
+            code: a.code,
+            controller: a.controller,
+            faceDown: false,
+            sideways: false,
+            targetId: atk.target && atk.target.location === LOC.MZONE ? atk.target.id : undefined,
+            toPlayer: 1 - a.controller,
+          });
+          this.hold = Math.max(this.hold, BUMP_MS);
+        }
+        this.attack = null;
+        break;
+      }
       case T.DAMAGE_STEP_END:
         this.attack = null;
         break;
@@ -976,7 +1191,9 @@ export class DuelState {
           description: c.description,
           card: null,
           negated: false,
+          targets: [],
         }));
+        this.chainBuilding = false;
         break;
       }
       case T.REMOVE_CARDS: {
@@ -992,14 +1209,11 @@ export class DuelState {
       case T.CARD_HINT:
       case T.PLAYER_HINT:
       case T.MISSED_EFFECT:
-      case T.BECOME_TARGET:
       case T.CARD_SELECTED:
       case T.RANDOM_SELECTED:
       case T.SUMMONED:
       case T.SPSUMMONED:
       case T.FLIPSUMMONED:
-      case T.CHAINED:
-      case T.DAMAGE_STEP_START:
       case T.BE_CHAIN_TARGET:
       case T.CREATE_RELATION:
       case T.RELEASE_RELATION:
@@ -1011,6 +1225,31 @@ export class DuelState {
       default:
         break;
     }
+  }
+
+  private isKnown(c: DuelCard) {
+    return !!c.code && !((c.location & LOC.ONFIELD) && c.position & POS.FACEDOWN && c.controller !== this.me);
+  }
+
+  /** How a targeted card is named in the log, e.g. "Dark Magician" or "a face-down card (GY)". */
+  private targetName(c: DuelCard) {
+    const owner = this.isSpectator ? "" : c.controller === this.me ? "your " : "opponent's ";
+    const name = this.isKnown(c) && !(c.position & POS.FACEDOWN && c.location & LOC.ONFIELD) ? this.fmt.name(c.code) : `${owner}face-down card`;
+    const where =
+      c.location & LOC.ONFIELD
+        ? ""
+        : c.location === LOC.GRAVE
+          ? " (GY)"
+          : c.location === LOC.REMOVED
+            ? " (banished)"
+            : c.location === LOC.HAND
+              ? " (hand)"
+              : c.location === LOC.DECK
+                ? " (Deck)"
+                : c.location === LOC.EXTRA
+                  ? " (Extra Deck)"
+                  : "";
+    return name + where;
   }
 
   /** Clears equip/target links pointing at a card that left the field. */

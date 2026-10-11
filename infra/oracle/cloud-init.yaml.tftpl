@@ -1,51 +1,25 @@
 #cloud-config
-# First-boot setup for the EDOPro web proxy: Node.js 22, the proxy as a
-# systemd service on 127.0.0.1:7000, and Caddy in front for HTTPS/WebSockets.
+# First-boot setup for the EDOPro web proxy: Node.js 22, Caddy in front for
+# HTTPS/WebSockets, then deploy.sh (rendered from deploy.sh.tftpl) installs the
+# proxy, its systemd service and the daily accounts maintenance timer.
+# Later updates go through the same deploy.sh via `terraform apply`.
 
 package_update: true
 packages:
   - curl
 
 write_files:
-  - path: /opt/edopro-proxy/src/server.mjs
+  - path: /opt/edopro-proxy/deploy.sh
     encoding: gz+b64
-    content: ${server_mjs}
-  - path: /opt/edopro-proxy/src/websocket.mjs
-    encoding: gz+b64
-    content: ${websocket_mjs}
-  - path: /opt/edopro-proxy/package.json
-    encoding: gz+b64
-    content: ${package_json}
-  - path: /opt/edopro-proxy/config.json
-    encoding: gz+b64
-    content: ${config_json}
-  - path: /etc/systemd/system/edopro-proxy.service
-    content: |
-      [Unit]
-      Description=EDOPro web proxy
-      After=network-online.target
-      Wants=network-online.target
-
-      [Service]
-      User=edoproxy
-      WorkingDirectory=/opt/edopro-proxy
-      ExecStart=/usr/bin/node src/server.mjs config.json
-      Restart=always
-      RestartSec=2
-      NoNewPrivileges=true
-      ProtectSystem=strict
-      ProtectHome=true
-      PrivateTmp=true
-
-      [Install]
-      WantedBy=multi-user.target
+    permissions: "0700"
+    content: ${deploy_sh}
   - path: /opt/edopro-proxy/setup.sh
     permissions: "0755"
     content: |
       #!/bin/bash
       set -euxo pipefail
 
-      # Node.js 22 (NodeSource)
+      # Node.js 22 (NodeSource); 22.13+ has the built-in SQLite the accounts use.
       curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
       apt-get install -y nodejs
 
@@ -71,11 +45,8 @@ write_files:
       }
       CADDY
 
-      id edoproxy >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin edoproxy
-      chown -R edoproxy:edoproxy /opt/edopro-proxy
-
-      systemctl daemon-reload
-      systemctl enable --now edopro-proxy
+      # The proxy itself, its service and the maintenance timer.
+      bash /opt/edopro-proxy/deploy.sh
       systemctl restart caddy
 
 runcmd:

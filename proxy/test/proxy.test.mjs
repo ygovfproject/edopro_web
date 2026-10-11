@@ -126,3 +126,26 @@ test("enforces per-IP connection limit", async () => {
 test("rejects unknown server on websocket", async () => {
   await assert.rejects(openWs("nope"));
 });
+
+/** Sends a raw HTTP request and returns the status line ("" if the connection died). */
+function raw(request) {
+  return new Promise((resolve) => {
+    const sock = net.connect(proxyPort, "127.0.0.1", () => sock.write(request));
+    let t = "";
+    sock.on("data", (c) => (t += c));
+    sock.on("close", () => resolve(t.split("\r\n")[0]));
+    sock.on("error", () => resolve(""));
+    sock.setTimeout(3000, () => sock.destroy());
+  });
+}
+
+test("malformed URLs get 400 and don't stop the service", async () => {
+  assert.match(await raw("GET /api/servers/%E0/rooms HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), / 400 /);
+  assert.match(await raw("GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), / 400 /);
+  const upgrade = (path) =>
+    `GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`;
+  assert.match(await raw(upgrade("/api/servers/%E0/connect")), / 400 /);
+  assert.match(await raw(upgrade("//[")), / 400 /);
+  // Still serving.
+  assert.equal((await getJson("/api/servers")).status, 200);
+});

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!--
+    Synchro ring, drawn for Tuners while picking materials and in the Synchro Summon.
+    Replace this file to change how the rings look. The ring itself should fill about
+    80% of the canvas (the rest is room for its glow); the app sizes the image so that
+    80% is a bit smaller than a field cell.
+  -->
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3.2" result="blur" />
+      <feFlood flood-color="#39ff14" />
+      <feComposite in2="blur" operator="in" result="green" />
+      <feMerge>
+        <feMergeNode in="green" />
+        <feMergeNode in="green" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <circle cx="50" cy="50" r="40" fill="none" stroke="#ffffff" stroke-width="3.5" filter="url(#glow)" />
+</svg>

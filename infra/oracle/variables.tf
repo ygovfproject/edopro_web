@@ -25,6 +25,12 @@ variable "ssh_public_key_path" {
   }
 }
 
+variable "ssh_private_key_path" {
+  description = "Private key matching ssh_public_key_path; used by `terraform apply` to update the proxy on the server."
+  type        = string
+  default     = "~/.ssh/id_ed25519"
+}
+
 variable "ssh_allowed_cidr" {
   description = "Who may reach SSH (port 22). Narrow it to your own IP/32 if you like."
   type        = string

@@ -2,11 +2,12 @@
   "name": "edopro-web-proxy",
   "version": "0.1.0",
   "private": true,
-  "description": "WebSocket-to-TCP bridge and room-list relay between the browser client and EDOPro (Multirole) servers. No dependencies.",
+  "description": "WebSocket-to-TCP bridge and room-list relay between the browser client and EDOPro (Multirole) servers, plus optional accounts and cloud decks (SQLite). No dependencies.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22.13" },
   "scripts": {
-    "start": "node src/server.mjs config.json",
-    "test": "node --test test/proxy.test.mjs"
+    "start": "node --disable-warning=ExperimentalWarning src/server.mjs config.json",
+    "maintenance": "node --disable-warning=ExperimentalWarning src/maintenance.mjs config.json",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
   }
 }

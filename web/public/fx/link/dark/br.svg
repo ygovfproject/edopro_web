@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2000" width="2000" height="2000">
+  <defs>
+    <clipPath id="cpbr"><path d="M1450.00,1450.00 L1180.00,1450.00 L1450.00,1180.00 Z"/></clipPath>
+    <linearGradient id="plbr" gradientUnits="userSpaceOnUse" x1="0" y1="1180.00" x2="0" y2="1450.00"><stop offset="0" stop-color="#878D96"/><stop offset="0.5" stop-color="#666C75"/><stop offset="1" stop-color="#41464D"/></linearGradient>
+    <radialGradient id="hdbr" gradientUnits="userSpaceOnUse" cx="1362.48" cy="1362.48" r="223.18"><stop offset="0" stop-color="#33406A"/><stop offset="0.25" stop-color="#232D4C"/><stop offset="0.52" stop-color="#141B31"/><stop offset="0.80" stop-color="#0C1120"/><stop offset="1" stop-color="#05070E"/></radialGradient>
+    <filter id="sfbr" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="1.5"/></filter>
+  </defs>
+  <g clip-path="url(#cpbr)">
+    <path d="M1450.00,1450.00 L1180.00,1450.00 L1450.00,1180.00 Z" fill="url(#plbr)"/>
+    <path d="M1432.01,1432.01 L1223.43,1432.01 L1432.01,1223.43 Z" fill="none" stroke="#454C57" stroke-width="7.0" stroke-linejoin="round" filter="url(#sfbr)"/>
+    <path d="M1443.28,1443.28 L1196.23,1443.28 L1443.28,1196.23 Z" fill="none" stroke="#C9CFD8" stroke-width="2.2" stroke-linejoin="round" opacity="0.55"/>
+    <path d="M1450.00,1450.00 L1180.00,1450.00 L1450.00,1180.00 Z" fill="none" stroke="#23262B" stroke-width="4.8" stroke-linejoin="round"/>
+  </g>
+  <path d="M1432.01,1432.01 L1223.43,1432.01 L1432.01,1223.43 Z" fill="url(#hdbr)" stroke="#04060B" stroke-width="2.6" stroke-linejoin="round"/>
+</svg>

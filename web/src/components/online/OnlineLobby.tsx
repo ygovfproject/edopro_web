@@ -75,8 +75,10 @@ function writeCookie(name: string, value: string) {
 }
 const RULES = ["OCG", "TCG", "OCG/TCG", "Prerelease", "Any"];
 
-export default function OnlineLobby({ onError }: { onError: (msg: string) => void }) {
-  const { config, res, openClient, settings, decks } = useApp();
+export default function OnlineLobby({ onError, onSignIn }: { onError: (msg: string) => void; onSignIn: () => void }) {
+  const { config, res, openClient, decks, user } = useApp();
+  // Guests (not signed in) can only watch duels that have started.
+  const guest = !user;
   const [servers, setServers] = useState<ServerEntry[]>([]);
   const [serverId, setServerId] = useState<string>("");
   const [rooms, setRooms] = useState<RoomEntry[]>([]);
@@ -192,7 +194,7 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return rooms.filter((r) => {
-      if (hideStarted && r.istart !== "waiting") return false;
+      if (guest ? r.istart === "waiting" : hideStarted && r.istart !== "waiting") return false;
       if (hideLocked && r.needpass) return false;
       if (ruleFilter) {
         const id = masterRuleIdOf(BigInt(Math.trunc(r.duel_flag))) ?? "custom";
@@ -204,9 +206,9 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
       if (!q) return true;
       return r.roomnotes.toLowerCase().includes(q) || r.users.some((u) => u.name.toLowerCase().includes(q));
     });
-  }, [rooms, filter, hideStarted, hideLocked, ruleFilter, cardsFilter, matchFilter]);
+  }, [rooms, filter, guest, hideStarted, hideLocked, ruleFilter, cardsFilter, matchFilter]);
 
-  const needSetup = !settings.name ? "Set your duelist name in Settings first." : decks.length === 0 ? "Upload a deck in the Decks tab first." : null;
+  const needSetup = guest ? "Sign in to duel." : decks.length === 0 ? "Upload a deck in the Decks tab first." : null;
 
   // Watching a duel in progress needs no deck; taking a seat in a waiting room does.
   const join = (room: RoomEntry, password = "") => {
@@ -249,18 +251,34 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
             </IconButton>
           </span>
         </Tooltip>
-        <Button variant="outlined" onClick={() => setByIdOpen(true)} disabled={!serverId}>
-          Join by ID
-        </Button>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          disabled={!serverId}
-          onClick={() => (needSetup ? onError(needSetup) : setHostOpen(true))}
-        >
-          Host
-        </Button>
+        {!guest && (
+          <>
+            <Button variant="outlined" onClick={() => setByIdOpen(true)} disabled={!serverId}>
+              Join by ID
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              disabled={!serverId}
+              onClick={() => (needSetup ? onError(needSetup) : setHostOpen(true))}
+            >
+              Host
+            </Button>
+          </>
+        )}
       </Stack>
+      {guest && (
+        <Alert
+          severity="info"
+          action={
+            <Button color="inherit" size="small" onClick={onSignIn}>
+              Sign in
+            </Button>
+          }
+        >
+          You&apos;re watching as a guest. Sign in to host and join duels.
+        </Alert>
+      )}
       <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
         <TextField select size="small" label="Rule" value={ruleFilter} onChange={(e) => setRuleFilter(e.target.value)} sx={{ minWidth: 190 }}>
           <MenuItem value="">Any rule</MenuItem>
@@ -284,7 +302,9 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
           <MenuItem value="single">Single duel</MenuItem>
           <MenuItem value="match">Match (Bo3+)</MenuItem>
         </TextField>
-        <FormControlLabel control={<Switch size="small" checked={hideStarted} onChange={(e) => setHideStarted(e.target.checked)} />} label="Hide started" />
+        {!guest && (
+          <FormControlLabel control={<Switch size="small" checked={hideStarted} onChange={(e) => setHideStarted(e.target.checked)} />} label="Hide started" />
+        )}
         <FormControlLabel control={<Switch size="small" checked={hideLocked} onChange={(e) => setHideLocked(e.target.checked)} />} label="Hide locked" />
       </Stack>
       {roomError && <Alert severity="warning">{roomError}</Alert>}
@@ -306,7 +326,11 @@ export default function OnlineLobby({ onError }: { onError: (msg: string) => voi
                 <TableRow>
                   <TableCell colSpan={5}>
                     <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
-                      {rooms.length ? "No rooms match the filters." : "No open rooms. Host one!"}
+                      {guest
+                        ? "No duels to watch right now."
+                        : rooms.length
+                          ? "No rooms match the filters."
+                          : "No open rooms. Host one!"}
                     </Typography>
                   </TableCell>
                 </TableRow>

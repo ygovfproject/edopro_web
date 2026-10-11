@@ -27,8 +27,10 @@ import {
   Typography,
 } from "@mui/material";
 import CodeIcon from "@mui/icons-material/Code";
+import LoginIcon from "@mui/icons-material/Login";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { AppProvider, useApp, useClientState } from "./AppContext";
+import { AuthDialog, DeleteAccountDialog } from "./account/AccountDialogs";
 import DeckManager from "./decks/DeckManager";
 import OnlineLobby from "./online/OnlineLobby";
 import RoomView from "./room/RoomView";
@@ -89,26 +91,28 @@ function clearSession() {
 const DUEL_STATUSES = new Set(["rps", "rps-wait", "choose-order", "order-wait", "dueling", "siding", "side-wait", "rematch", "rematch-wait"]);
 
 function Shell() {
-  const { loading, loadErrors, client, closeClient, openClient, settings, config } = useApp();
+  const { loading, loadErrors, client, closeClient, openClient, config, user, authReady, playerName } = useApp();
   useClientState(client);
   const [tab, setTab] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Ask for a name the first time.
+  // The Decks tab is only there when signed in.
   useEffect(() => {
-    if (!loading && !settings.name) setSettingsOpen(true);
-  }, [loading, settings.name]);
+    if (authReady && !user) setTab(0);
+  }, [authReady, user]);
 
-  // Rejoin the room saved in the URL after a page reload.
+  // Rejoin the room saved in the URL after a page reload (once the saved session is
+  // checked, so the right name is used).
   const restored = useRef(false);
   useEffect(() => {
-    if (restored.current || loading || !config || !settings.name) return;
+    if (restored.current || loading || !config || !authReady) return;
     restored.current = true;
     const session = readSession();
     if (!session || client) return;
     openClient(session.server).join(session.room, session.password);
-  }, [loading, config, settings.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, config, authReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the URL pointing at the current room, so a reload can rejoin it.
   useEffect(() => {
@@ -158,20 +162,20 @@ function Shell() {
           <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
             EDOPro Web
           </Typography>
-          <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ flex: 1 }}>
+          <Tabs value={user ? tab : 0} onChange={(_, v) => setTab(v)} sx={{ flex: 1 }}>
             <Tab label="Online" />
-            <Tab label="Decks" />
+            {user && <Tab label="Decks" />}
           </Tabs>
-          <Typography variant="body2" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>
-            {settings.name || "No name set"}
-          </Typography>
-          {SOURCE_URL && (
-            <Tooltip title="Source code (AGPL-3.0)">
-              <IconButton component="a" href={SOURCE_URL} target="_blank" rel="noopener noreferrer">
-                <CodeIcon />
-              </IconButton>
-            </Tooltip>
+          {authReady && !user && (
+            <Button variant="contained" startIcon={<LoginIcon />} onClick={() => setAuthOpen(true)}>
+              Sign in
+            </Button>
           )}
+          <Tooltip title={user ? "Signed in" : "Guest: sign in to duel"}>
+            <Typography variant="body2" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>
+              {playerName}
+            </Typography>
+          </Tooltip>
           <Tooltip title="Settings">
             <IconButton onClick={() => setSettingsOpen(true)}>
               <SettingsIcon />
@@ -190,9 +194,10 @@ function Shell() {
             </Box>
           </Alert>
         )}
-        {tab === 0 ? <OnlineLobby onError={setToast} /> : <DeckManager />}
+        {tab === 1 && user ? <DeckManager /> : <OnlineLobby onError={setToast} onSignIn={() => setAuthOpen(true)} />}
       </Container>
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} onSignIn={() => setAuthOpen(true)} />
+      <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
       <Backdrop open={client?.status === "connecting"} sx={{ zIndex: 2000 }}>
         <Stack alignItems="center" spacing={2}>
           <CircularProgress />
@@ -211,28 +216,54 @@ function Shell() {
   );
 }
 
-function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { settings, updateSettings, config, res } = useApp();
-  const [name, setName] = useState(settings.name);
-  useEffect(() => setName(settings.name), [settings.name, open]);
-  const save = () => {
-    updateSettings({ name: name.trim().slice(0, 19) });
-    onClose();
-  };
+function SettingsDialog({ open, onClose, onSignIn }: { open: boolean; onClose: () => void; onSignIn: () => void }) {
+  const { settings, updateSettings, config, res, user, playerName, signOut } = useApp();
+  const [deleteOpen, setDeleteOpen] = useState(false);
   return (
-    <Dialog open={open} onClose={() => settings.name && onClose()} fullWidth maxWidth="xs">
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Settings</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          <TextField
-            label="Duelist name"
-            value={name}
-            autoFocus
-            onChange={(e) => setName(e.target.value)}
-            slotProps={{ htmlInput: { maxLength: 19 } }}
-            helperText="Shown to other players (max 19 characters)"
-            onKeyDown={(e) => e.key === "Enter" && name.trim() && save()}
-          />
+          <Box>
+            <Typography variant="overline" color="text.secondary">
+              {user ? "Account" : "Guest"}
+            </Typography>
+            <Typography>
+              Duelist name: <b>{playerName}</b>
+            </Typography>
+            {user ? (
+              <Stack direction="row" spacing={1} sx={{ mt: 1, alignItems: "center" }}>
+                <Button size="small" variant="outlined" onClick={() => signOut()}>
+                  Sign out
+                </Button>
+                <Button size="small" color="error" onClick={() => setDeleteOpen(true)}>
+                  Delete account
+                </Button>
+              </Stack>
+            ) : (
+              <>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Guests can watch duels. Sign in to host or join duels and to keep decks.
+                </Typography>
+                <Button
+                  size="small"
+                  variant="contained"
+                  sx={{ mt: 1 }}
+                  onClick={() => {
+                    onClose();
+                    onSignIn();
+                  }}
+                >
+                  Sign in
+                </Button>
+              </>
+            )}
+            {user && (
+              <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+                Accounts not used for 90 days are deleted together with their decks.
+              </Typography>
+            )}
+          </Box>
           <TextField
             select
             label="Chain prompts"
@@ -254,10 +285,24 @@ function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void 
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={save} disabled={!name.trim()} variant="contained">
-          Save
+        {SOURCE_URL && (
+          <Button
+            component="a"
+            href={SOURCE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            color="inherit"
+            startIcon={<CodeIcon />}
+            sx={{ mr: "auto" }}
+          >
+            Source code (AGPL-3.0)
+          </Button>
+        )}
+        <Button onClick={onClose} variant="contained">
+          Close
         </Button>
       </DialogActions>
+      <DeleteAccountDialog open={deleteOpen} onClose={() => setDeleteOpen(false)} onDeleted={() => setDeleteOpen(false)} />
     </Dialog>
   );
 }

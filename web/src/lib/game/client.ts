@@ -154,6 +154,10 @@ export class DuelClient {
 
   private transport: Transport | null = null;
   private splitter = new PacketSplitter();
+  /** Packets waiting while a summon animation plays (see pump). */
+  private pending: { type: number; body: Uint8Array }[] = [];
+  private holdUntil = 0;
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
   private intent: Intent | null = null;
   private versionRetried = false;
@@ -209,6 +213,7 @@ export class DuelClient {
     this.error = null;
     this.emit();
     this.transport?.close();
+    this.clearQueue();
     this.splitter = new PacketSplitter();
     this.transport = this.opts.transport({
       onOpen: () => {
@@ -231,6 +236,7 @@ export class DuelClient {
   }
 
   leave() {
+    this.clearQueue();
     if (this.transport) {
       this.send(ctos.simple(CTOS.LEAVE_GAME));
       this.transport.close();
@@ -309,6 +315,11 @@ export class DuelClient {
     this.status = "side-wait";
     this.emit();
   }
+  /** Material prompt click: shows the card as picked/unpicked before the server answers. */
+  pickMaterial(ref: { controller: number; location: number; sequence: number }, picked: boolean) {
+    this.duel.pickMaterial(ref, picked);
+    this.emit();
+  }
   answerRematch(yes: boolean) {
     this.send(ctos.rematch(yes));
     this.status = yes ? "rematch-wait" : "closed";
@@ -347,17 +358,47 @@ export class DuelClient {
   /* ---------------- incoming ---------------- */
 
   private onData(data: Uint8Array) {
+    for (const p of this.splitter.push(data)) this.pending.push(p);
+    this.pump();
+  }
+
+  /**
+   * Handles queued packets in order. After a summon, the board model asks to hold
+   * everything that follows (triggered effects, chains, prompts...) until the summon
+   * animation has finished, so those start after it instead of on top of it.
+   */
+  private pump() {
+    if (this.holdTimer) return;
     let changed = false;
-    for (const p of this.splitter.push(data)) {
+    while (this.pending.length) {
+      const wait = this.holdUntil - Date.now();
+      if (wait > 0 && !this.catchingUp) {
+        this.holdTimer = setTimeout(() => {
+          this.holdTimer = null;
+          this.pump();
+        }, wait);
+        break;
+      }
+      const p = this.pending.shift()!;
       try {
         this.handlePacket(p.type, p.body);
       } catch (e) {
         console.error("Failed to handle packet", p.type, e);
       }
       changed = true;
+      const hold = this.duel.takeHold();
+      // While catching up on a duel in progress nothing animates, so nothing waits.
+      if (hold > 0 && !this.catchingUp) this.holdUntil = Date.now() + hold;
     }
     // While catching up on a duel in progress, replay silently and render only the final state.
     if (changed && !this.catchingUp) this.emit();
+  }
+
+  private clearQueue() {
+    this.pending = [];
+    this.holdUntil = 0;
+    if (this.holdTimer) clearTimeout(this.holdTimer);
+    this.holdTimer = null;
   }
 
   private addChat(kind: ChatLine["kind"], name: string, text: string) {
@@ -430,7 +471,11 @@ export class DuelClient {
       }
       case STOC.DUEL_START:
         // Sent at the start of each game of a match (and to late spectators).
-        if (this.status === "lobby" || this.status === "rematch-wait" || this.status === "side-wait") this.status = "order-wait";
+        // Between games of a match the server sends this to each duelist as soon as *their* side
+        // deck is accepted, and to spectators once everyone is done. A duelist keeps waiting
+        // (for the opponent's side deck, then the turn order) until the next game starts.
+        if (this.status === "lobby" || this.status === "rematch-wait") this.status = "order-wait";
+        else if (this.status === "side-wait" && this.isObserver) this.status = "order-wait";
         this.prompt = null;
         break;
       case STOC.SELECT_HAND:
@@ -534,6 +579,7 @@ export class DuelClient {
       this.duel.waiting = false;
       if (this.catchingUp || this.duel.isSpectator) return;
       if (this.autoRespond(msg)) return;
+      this.duel.syncMaterialPicks(msg);
       this.prompt = { id: ++this.promptId, msg, hint: this.duel.selectHint };
       return;
     }

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2000" width="2000" height="2000">
+  <defs>
+    <clipPath id="cptl"><path d="M550.00,550.00 L820.00,550.00 L550.00,820.00 Z"/></clipPath>
+    <linearGradient id="pltl" gradientUnits="userSpaceOnUse" x1="0" y1="550.00" x2="0" y2="820.00"><stop offset="0" stop-color="#878D96"/><stop offset="0.5" stop-color="#666C75"/><stop offset="1" stop-color="#41464D"/></linearGradient>
+    <radialGradient id="hdtl" gradientUnits="userSpaceOnUse" cx="637.52" cy="637.52" r="223.18"><stop offset="0" stop-color="#33406A"/><stop offset="0.25" stop-color="#232D4C"/><stop offset="0.52" stop-color="#141B31"/><stop offset="0.80" stop-color="#0C1120"/><stop offset="1" stop-color="#05070E"/></radialGradient>
+    <filter id="sftl" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="1.5"/></filter>
+  </defs>
+  <g clip-path="url(#cptl)">
+    <path d="M550.00,550.00 L820.00,550.00 L550.00,820.00 Z" fill="url(#pltl)"/>
+    <path d="M567.99,567.99 L776.57,567.99 L567.99,776.57 Z" fill="none" stroke="#454C57" stroke-width="7.0" stroke-linejoin="round" filter="url(#sftl)"/>
+    <path d="M556.72,556.72 L803.77,556.72 L556.72,803.77 Z" fill="none" stroke="#C9CFD8" stroke-width="2.2" stroke-linejoin="round" opacity="0.55"/>
+    <path d="M550.00,550.00 L820.00,550.00 L550.00,820.00 Z" fill="none" stroke="#23262B" stroke-width="4.8" stroke-linejoin="round"/>
+  </g>
+  <path d="M567.99,567.99 L776.57,567.99 L567.99,776.57 Z" fill="url(#hdtl)" stroke="#04060B" stroke-width="2.6" stroke-linejoin="round"/>
+</svg>

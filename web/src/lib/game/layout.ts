@@ -69,12 +69,8 @@ export function linkedZones(player: number, sequence: number, marker: number, em
   const opp = (seq: number) => out.push({ player: 1 - player, location: 0x04, sequence: seq });
   if (s > 0 && s <= 4 && has(LINK.LEFT)) own(0x04, s - 1);
   if (s <= 3 && has(LINK.RIGHT)) own(0x04, s + 1);
-  if (s < 5) {
-    // Bottom markers of a Main Monster Zone point at the Spell & Trap Zones below.
-    if (s > 0 && has(LINK.BOTTOM_LEFT)) own(0x08, s - 1);
-    if (s < 4 && has(LINK.BOTTOM_RIGHT)) own(0x08, s + 1);
-    if (has(LINK.BOTTOM)) own(0x08, s);
-  }
+  // Bottom markers of a Main Monster Zone point at nothing: Link Arrows only
+  // point at Monster Zones (the Spell & Trap Zones below don't count).
   if (emz) {
     if ((s === 0 && has(LINK.TOP_RIGHT)) || (s === 1 && has(LINK.TOP)) || (s === 2 && has(LINK.TOP_LEFT))) {
       own(0x04, 5);

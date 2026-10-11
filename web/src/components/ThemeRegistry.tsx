@@ -19,6 +19,18 @@ const theme = createTheme({
   components: {
     MuiButton: { defaultProps: { disableElevation: true } },
     MuiTooltip: { defaultProps: { arrow: true } },
+    // Scrollbars in the app's grey/yellow style, everywhere.
+    MuiCssBaseline: {
+      styleOverrides: {
+        "*": { scrollbarWidth: "thin", scrollbarColor: "#4a4a4a transparent" },
+        "*:hover": { scrollbarColor: "#6a6a6a transparent" },
+        "*::-webkit-scrollbar": { width: 8, height: 8 },
+        "*::-webkit-scrollbar-track": { background: "transparent" },
+        "*::-webkit-scrollbar-thumb": { background: "#4a4a4a", borderRadius: 8, border: "2px solid transparent", backgroundClip: "padding-box" },
+        "*::-webkit-scrollbar-thumb:hover": { background: "#f5c518", backgroundClip: "padding-box" },
+        "*::-webkit-scrollbar-corner": { background: "transparent" },
+      },
+    },
   },
 });
 

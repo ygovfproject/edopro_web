@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2000" width="2000" height="2000">
+  <defs>
+    <clipPath id="cpbl"><path d="M550.00,1450.00 L820.00,1450.00 L550.00,1180.00 Z"/></clipPath>
+    <linearGradient id="plbl" gradientUnits="userSpaceOnUse" x1="0" y1="1180.00" x2="0" y2="1450.00"><stop offset="0" stop-color="#FBFDFF"/><stop offset="0.5" stop-color="#E4EDF9"/><stop offset="1" stop-color="#BCC9DE"/></linearGradient>
+    <radialGradient id="hdbl" gradientUnits="userSpaceOnUse" cx="637.52" cy="1362.48" r="223.18"><stop offset="0" stop-color="#fff"/><stop offset="0.25" stop-color="#ed774f"/><stop offset="0.52" stop-color="#ca351b"/><stop offset="0.80" stop-color="#a4230b"/><stop offset="1" stop-color="#480000"/></radialGradient>
+    <filter id="sfbl" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="1.5"/></filter>
+  </defs>
+  <g clip-path="url(#cpbl)">
+    <path d="M550.00,1450.00 L820.00,1450.00 L550.00,1180.00 Z" fill="url(#plbl)"/>
+    <path d="M567.99,1432.01 L776.57,1432.01 L567.99,1223.43 Z" fill="none" stroke="#A2B6C7" stroke-width="7.0" stroke-linejoin="round" filter="url(#sfbl)"/>
+    <path d="M556.72,1443.28 L803.77,1443.28 L556.72,1196.23 Z" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round" opacity="0.9"/>
+    <path d="M550.00,1450.00 L820.00,1450.00 L550.00,1180.00 Z" fill="none" stroke="#4E535B" stroke-width="4.8" stroke-linejoin="round"/>
+  </g>
+  <path d="M567.99,1432.01 L776.57,1432.01 L567.99,1223.43 Z" fill="url(#hdbl)" stroke="#37120E" stroke-width="2.6" stroke-linejoin="round"/>
+</svg>

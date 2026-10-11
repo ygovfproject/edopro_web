@@ -10,6 +10,9 @@
 //
 // Only servers listed in the config can be reached, so this is not an open
 // proxy.
+//
+// Optionally (config "accounts"), it also hosts the accounts and cloud-deck API
+// (accounts.mjs), backed by a SQLite file on this server.
 
 import http from "node:http";
 import https from "node:https";
@@ -18,6 +21,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { handshake, WebSocketConnection } from "./websocket.mjs";
+import { createAccounts } from "./accounts.mjs";
+import { openDatabase } from "./db.mjs";
 
 const DEFAULTS = {
   host: "0.0.0.0",
@@ -28,6 +33,8 @@ const DEFAULTS = {
   maxConnections: 1000,
   roomListCacheMs: 2000,
   servers: [],
+  // { "dbPath": "data/accounts.db" } enables accounts and cloud decks.
+  accounts: null,
 };
 
 export function loadConfig(path) {
@@ -53,7 +60,11 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
-export function createProxy(cfg) {
+/**
+ * Creates the HTTP server. `accounts` is the accounts API (createAccounts), or null to
+ * run without accounts.
+ */
+export function createProxy(cfg, accounts = null) {
   const servers = new Map(cfg.servers.map((s) => [s.id, s]));
   const perIp = new Map();
   let total = 0;
@@ -62,7 +73,9 @@ export function createProxy(cfg) {
   function clientIp(req) {
     if (cfg.trustProxy) {
       const xf = req.headers["x-forwarded-for"];
-      if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+      // The last entry is the one our own reverse proxy (Caddy) added; earlier entries
+      // come from the client and can be forged, which would dodge per-IP rate limits.
+      if (typeof xf === "string" && xf.length) return xf.split(",").pop().trim();
     }
     return req.socket.remoteAddress ?? "unknown";
   }
@@ -84,11 +97,17 @@ export function createProxy(cfg) {
     return {};
   }
 
-  function sendJson(req, res, status, body) {
+  function sendJson(req, res, status, body, headers = {}) {
+    if (body === null) {
+      res.writeHead(status, { "Cache-Control": "no-store", ...corsHeaders(req), ...headers });
+      return res.end();
+    }
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
       ...corsHeaders(req),
+      ...headers,
     });
     res.end(JSON.stringify(body));
   }
@@ -122,15 +141,39 @@ export function createProxy(cfg) {
   }
 
   const httpServer = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://x");
+    try {
+      await handleRequest(req, res);
+    } catch (e) {
+      // Never let one bad request take the process (and every live duel) down.
+      log("request error:", e?.code ?? e?.name ?? "error", e?.message);
+      if (!res.headersSent) sendJson(req, res, 500, { error: "Internal error" });
+      else res.destroy();
+    }
+  });
+  // Bound slow uploads (Node's default is 5 minutes).
+  httpServer.requestTimeout = 30_000;
+  httpServer.headersTimeout = 20_000;
+
+  async function handleRequest(req, res) {
+    const url = parseUrl(req.url);
+    if (!url) return sendJson(req, res, 400, { error: "Bad request" });
+    const api = !!accounts && accounts.owns(url.pathname);
     if (req.method === "OPTIONS") {
-      res.writeHead(204, { ...corsHeaders(req), "Access-Control-Allow-Methods": "GET", "Access-Control-Max-Age": "600" });
+      res.writeHead(204, {
+        ...corsHeaders(req),
+        "Access-Control-Allow-Methods": api ? "GET, POST, PUT, DELETE" : "GET",
+        ...(api ? { "Access-Control-Allow-Headers": "Authorization, Content-Type" } : {}),
+        "Access-Control-Max-Age": "600",
+      });
       return res.end();
     }
-    if (req.method !== "GET") return sendJson(req, res, 405, { error: "Method not allowed" });
     if (req.headers.origin && !originAllowed(req.headers.origin)) {
       log(`request from origin ${req.headers.origin} is not in allowedOrigins; the browser will block it`);
     }
+    if (api) {
+      return accounts.handle(req, res, url, { ip: clientIp(req), send: (status, body, headers) => sendJson(req, res, status, body, headers) });
+    }
+    if (req.method !== "GET") return sendJson(req, res, 405, { error: "Method not allowed" });
     if (url.pathname === "/healthz") return sendJson(req, res, 200, { ok: true, connections: total });
     if (url.pathname === "/api/servers") {
       return sendJson(req, res, 200, {
@@ -139,22 +182,37 @@ export function createProxy(cfg) {
     }
     const m = url.pathname.match(/^\/api\/servers\/([^/]+)\/rooms$/);
     if (m) {
-      const server = servers.get(decodeURIComponent(m[1]));
+      const id = decode(m[1]);
+      if (id === null) return sendJson(req, res, 400, { error: "Bad request" });
+      const server = servers.get(id);
       if (!server) return sendJson(req, res, 404, { error: "Unknown server" });
       const r = await fetchRoomList(server);
       return sendJson(req, res, r.status, r.body);
     }
     sendJson(req, res, 404, { error: "Not found" });
-  });
+  }
 
   httpServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://x");
-    const m = url.pathname.match(/^\/api\/servers\/([^/]+)\/connect$/);
     const reject = (code, text) => {
       socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
+    try {
+      upgrade(req, socket, head, reject);
+    } catch (e) {
+      log("upgrade error:", e?.code ?? e?.name ?? "error", e?.message);
+      if (socket.writable) reject(500, "Internal Server Error");
+      else socket.destroy();
+    }
+  });
+
+  function upgrade(req, socket, head, reject) {
+    const url = parseUrl(req.url);
+    if (!url) return reject(400, "Bad Request");
+    const m = url.pathname.match(/^\/api\/servers\/([^/]+)\/connect$/);
     if (!m) return reject(404, "Not Found");
-    const server = servers.get(decodeURIComponent(m[1]));
+    const id = decode(m[1]);
+    if (id === null) return reject(400, "Bad Request");
+    const server = servers.get(id);
     if (!server) return reject(404, "Not Found");
     if (!originAllowed(req.headers.origin)) {
       log(`rejected WebSocket from origin ${req.headers.origin} (not in allowedOrigins)`);
@@ -210,17 +268,49 @@ export function createProxy(cfg) {
       ws.alive = false;
       ws.ping();
     }, 30000);
-  });
+  }
 
   return httpServer;
+}
+
+/** The request URL, or null if it can't be parsed (e.g. "//["). */
+function parseUrl(raw) {
+  try {
+    return new URL(raw ?? "/", "http://x");
+  } catch {
+    return null;
+  }
+}
+
+/** decodeURIComponent, or null for malformed escapes (e.g. "%E0"). */
+function decode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   const cfg = loadConfig(process.argv[2]);
-  const server = createProxy(cfg);
+  let accounts = null;
+  if (cfg.accounts?.dbPath) {
+    const db = await openDatabase(resolve(cfg.accounts.dbPath));
+    accounts = createAccounts(db);
+  }
+  const server = createProxy(cfg, accounts);
+  // Startup failures (port in use, ...) stop the process so systemd reports them.
+  server.on("error", (e) => {
+    log("server error:", e?.code ?? e?.message);
+    process.exit(1);
+  });
   server.listen(cfg.port, cfg.host, () => {
-    log(`EDOPro web proxy listening on ${cfg.host}:${cfg.port}`);
+    log(`EDOPro web proxy listening on ${cfg.host}:${cfg.port}${accounts ? " (accounts enabled)" : ""}`);
     for (const s of cfg.servers) log(`  server "${s.id}" -> ${s.host}:${s.port}`);
+    // Once running, log stray errors instead of exiting: a restart would drop every live
+    // duel and reset the in-memory rate limits.
+    process.on("unhandledRejection", (e) => log("unhandled rejection:", e?.code ?? e?.name ?? "error", e?.message));
+    process.on("uncaughtException", (e) => log("uncaught exception:", e?.code ?? e?.name ?? "error", e?.message, e?.stack));
   });
 }

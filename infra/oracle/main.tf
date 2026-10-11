@@ -25,15 +25,29 @@ locals {
     maxConnectionsPerIp = 8
     maxConnections      = 1000
     servers             = jsondecode(file("${local.proxy_dir}/config.example.json")).servers
+    # Accounts and cloud decks: SQLite on the server's own disk (systemd StateDirectory),
+    # never exposed to the network. Daily backups go to /var/lib/edopro-proxy/backups.
+    accounts = { dbPath = "/var/lib/edopro-proxy/accounts.db" }
   })
 
-  cloud_init = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    server_mjs    = base64gzip(file("${local.proxy_dir}/src/server.mjs"))
-    websocket_mjs = base64gzip(file("${local.proxy_dir}/src/websocket.mjs"))
-    package_json  = base64gzip(file("${local.proxy_dir}/package.json"))
-    config_json   = base64gzip(local.proxy_config)
-    domain        = var.domain
-  })
+  # Everything the proxy needs on the server (path under /opt/edopro-proxy -> contents).
+  proxy_files = merge(
+    { for f in fileset(local.proxy_dir, "src/*.mjs") : f => base64gzip(file("${local.proxy_dir}/${f}")) },
+    {
+      "package.json" = base64gzip(file("${local.proxy_dir}/package.json"))
+      "config.json"  = base64gzip(local.proxy_config)
+    },
+  )
+
+  # Installs / updates the proxy, its service and the maintenance timer (see deploy.sh.tftpl).
+  # replace() drops Windows line endings (CR) in case the repo was checked out with them;
+  # bash on the server would fail on them. (.gitattributes keeps these files LF too.)
+  deploy_sh = replace(templatefile("${path.module}/deploy.sh.tftpl", { files = local.proxy_files }), "\r", "")
+
+  cloud_init = replace(templatefile("${path.module}/cloud-init.yaml.tftpl", {
+    deploy_sh = base64gzip(local.deploy_sh)
+    domain    = var.domain
+  }), "\r", "")
 }
 
 # ---------------- network ----------------
@@ -163,5 +177,37 @@ resource "oci_core_instance" "proxy" {
   # (and a new sslip.io hostname). Update the proxy code with update-proxy.ps1 instead.
   lifecycle {
     ignore_changes = [metadata, source_details]
+  }
+}
+
+# ---------------- proxy updates ----------------
+
+# Cloud-init only runs on first boot (and the instance ignores metadata changes, so it is
+# never replaced). This pushes the current proxy code, config, service and maintenance timer
+# to the running server over SSH whenever any of them change. It creates nothing in Oracle
+# Cloud: it only exists in Terraform's state.
+resource "terraform_data" "proxy_deploy" {
+  triggers_replace = [sha256(local.deploy_sh), oci_core_instance.proxy.id]
+
+  connection {
+    type        = "ssh"
+    host        = oci_core_instance.proxy.public_ip
+    user        = "ubuntu"
+    private_key = file(pathexpand(var.ssh_private_key_path))
+    timeout     = "2m"
+  }
+
+  provisioner "file" {
+    content     = local.deploy_sh
+    destination = "/tmp/edopro-deploy.sh"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      # On a brand-new server, let first-boot setup (Node.js, Caddy) finish first.
+      "cloud-init status --wait >/dev/null 2>&1 || true",
+      "sudo bash /tmp/edopro-deploy.sh",
+      "rm -f /tmp/edopro-deploy.sh",
+    ]
   }
 }

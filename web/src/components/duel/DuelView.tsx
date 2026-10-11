@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   Chip,
-  Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
@@ -23,8 +22,9 @@ import {
 } from "@mui/material";
 import FlagIcon from "@mui/icons-material/Flag";
 import { useApp, useClientState } from "../AppContext";
-import Board, { HandRow } from "./Board";
+import Board, { HandRow, type ZoneGlow } from "./Board";
 import PromptDialog, { isBoardPrompt } from "./Prompts";
+import FieldDialog, { FieldWindow } from "./FieldDialog";
 import CardDetail from "../CardDetail";
 import ChatBox from "../ChatBox";
 import { CardImage, cardHeight } from "../CardImage";
@@ -37,25 +37,60 @@ import { actionsFor, disabledZoneKeys, selectableZones, zoneKey, type CardAction
 import { OcgMessageType } from "@/lib/protocol/gamemsg";
 import { respond } from "@/lib/protocol/responses";
 import { MASTER_RULES } from "@/lib/protocol/constants";
+import { attributeColor, summonTimeline } from "@/lib/game/motion";
 import { fieldLayout, linkedZones } from "@/lib/game/layout";
 
-function useCardWidth(boardRows: number, handsOutside: boolean) {
+/** Padding kept inside the field window at every window size (px). */
+const FIELD_PAD = 10;
+/** Largest card width on the field (px); below it the field grows to fill the field window. */
+const MAX_CARD_W = 160;
+/** Gap between an LP bar and its hand (px). */
+const ROW_GAP = 4;
+/** Space between each hand and the board (px). */
+const HAND_GAP = 14;
+
+/**
+ * Card width that makes the block (LP bar, hand, field, hand, LP bar) as big as the field
+ * window allows, padding included. After every render it measures the field window and
+ * the block as they really are and grows or shrinks the cards to close the gap, so it
+ * keeps fitting through resizes, full screen and zoom without relying on size estimates.
+ */
+function useCardWidth(field: HTMLElement | null, block: HTMLElement | null, boardRows: number, handsOutside: boolean) {
   const [w, setW] = useState(56);
+  const [, remeasure] = useState(0);
+  // Window or field window resized: render again so the fit below runs.
   useEffect(() => {
-    const calc = () => {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      // 7 columns of cells (≈1.46 × width each) plus side panels on wide screens.
-      const avail = vw >= 1200 ? vw - 600 : vw - 24;
-      const byWidth = avail / (7 * 1.52);
-      // Board rows plus both hands.
-      const byHeight = (vh - 190) / ((boardRows + (handsOutside ? 2 : 0)) * 1.5);
-      setW(Math.max(30, Math.min(70, Math.floor(Math.min(byWidth, byHeight)))));
+    if (!field) return;
+    const again = () => remeasure((x) => x + 1);
+    const ro = new ResizeObserver(again);
+    ro.observe(field);
+    window.addEventListener("resize", again);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", again);
     };
-    calc();
-    window.addEventListener("resize", calc);
-    return () => window.removeEventListener("resize", calc);
-  }, [boardRows, handsOutside]);
+  }, [field]);
+  useLayoutEffect(() => {
+    if (!field || !block) return;
+    const f = field.getBoundingClientRect();
+    const b = block.getBoundingClientRect();
+    const availW = f.width - FIELD_PAD * 2;
+    const availH = f.height - FIELD_PAD * 2;
+    if (availW <= 0 || availH <= 0) return;
+    const k = 86 / 59; // card height / width (cardHeight)
+    const rows = boardRows + (handsOutside ? 2 : 0);
+    // How many px of card width the spare room is worth, across and down. The board is
+    // 7 cells wide (cell = card height + 6, 4 px gaps).
+    const boardW = 7 * (Math.round(w * k) + 6) + 6 * 4;
+    // A row's card height is rounded, so keep `rows` px in hand before growing.
+    const slackH = availH - b.height;
+    const byH = slackH >= 0 ? (slackH - rows) / (rows * k) : slackH / (rows * k);
+    const byW = (availW - boardW) / (7 * k);
+    const d = Math.floor(Math.min(byH, byW));
+    if (d === 0) return;
+    const next = Math.max(24, Math.min(MAX_CARD_W, w + d));
+    if (next !== w) setW(next);
+  });
   return w;
 }
 
@@ -86,14 +121,20 @@ export default function DuelView({ client }: { client: DuelClient }) {
   const duelFlags = client.hostInfo?.duelFlags ?? MASTER_RULES[0].flags;
   // MR3 draws both hands inside the board (same row as Deck and Extra Deck).
   const handsInBoard = fieldLayout(duelFlags).separatePz;
-  const W = useCardWidth(handsInBoard ? 7 : 5, !handsInBoard);
+  const [field, setField] = useState<HTMLElement | null>(null);
+  const [block, setBlock] = useState<HTMLElement | null>(null);
+  const W = useCardWidth(field, block, handsInBoard ? 7 : 5, !handsInBoard);
   const cellSize = cardHeight(W) + 6;
   const handWidth = 5 * cellSize + 4 * 4;
+  /** The field's width: 7 cells with 4 px gaps (see Board). The LP bars match it. */
+  const boardWidth = 7 * cellSize + 6 * 4;
   const timeOf = useCountdown(client);
   const [hover, setHover] = useState<{ code: number; card: DuelCard | null }>({ code: 0, card: null });
   const [hoverId, setHoverId] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ el: HTMLElement; actions: CardAction[]; title: string } | null>(null);
   const [pileView, setPileView] = useState<{ player: number; location: number } | null>(null);
+  /** The Xyz Monster whose materials are listed (DuelCard id). */
+  const [materialsOf, setMaterialsOf] = useState<number | null>(null);
   const [minimized, setMinimized] = useState<number | null>(null);
   const [sideTab, setSideTab] = useState(0);
   const [placeSel, setPlaceSel] = useState<Zone[]>([]);
@@ -187,13 +228,25 @@ export default function DuelView({ client }: { client: DuelClient }) {
     const hovered = hoverId !== null ? duel.allCards().find((c) => c.id === hoverId) : undefined;
     if (hovered) {
       for (const c of duel.allCards()) {
-        const pairs: [DuelCard, DuelCard, Link["kind"]][] = [];
-        if (c.equipTarget) pairs.push([c, c.equipTarget, "equip"]);
-        for (const t of c.targets) pairs.push([c, t, "target"]);
-        for (const [a, b, kind] of pairs) {
+        const pairs: [DuelCard, DuelCard][] = [];
+        if (c.equipTarget) pairs.push([c, c.equipTarget]);
+        for (const t of c.targets) pairs.push([c, t]);
+        for (const [a, b] of pairs) {
           if (a !== hovered && b !== hovered) continue;
+          // Related cards just get the white highlight; no arrows.
           linkedSet.add(a === hovered ? b.id : a.id);
-          out.push({ from: sel(a), to: sel(b), kind });
+        }
+      }
+      // An effect on the chain and the cards it targets, while both are on the field:
+      // bound like an equip until the link resolves.
+      const onField = (c: DuelCard) => (c.location & LOC.ONFIELD) !== 0;
+      for (const link of duel.chain) {
+        const src = link.card;
+        if (!src || !onField(src)) continue;
+        for (const t of link.targets) {
+          if (t === src || !onField(t)) continue;
+          if (src === hovered) linkedSet.add(t.id);
+          else if (t === hovered) linkedSet.add(src.id);
         }
       }
     }
@@ -210,6 +263,27 @@ export default function DuelView({ client }: { client: DuelClient }) {
     }
     return { linked: linkedSet, links: out };
   })();
+
+  // Xyz Summon in progress: the void behind every cell, until the card lands.
+  const xyzFx = duel.fx.find((f) => f.kind === "xyz");
+  const xyzTl = xyzFx ? summonTimeline("xyz", Math.max(1, xyzFx.materials?.length ?? 0)) : null;
+  const boardVoid =
+    xyzFx && xyzTl
+      ? {
+          id: xyzFx.id,
+          cardId: xyzFx.cardId,
+          color: attributeColor(res?.cards.get(xyzFx.code)?.attribute ?? 0),
+          end: xyzTl.impact,
+          // The cell turns yellow when the last sphere hits.
+          yellowAt: xyzTl.hits[xyzTl.hits.length - 1],
+        }
+      : null;
+
+  // Zones that glow for a moment (activation, chain resolving, Special Summon).
+  const glowZones = new Map<string, ZoneGlow>();
+  for (const f of duel.fx) {
+    if (f.kind === "glow" && f.zone) glowZones.set(zoneKey(f.zone), { id: f.id, color: f.color ?? "#ffffff", delay: f.delay ?? 0, blink: !!f.blink });
+  }
 
   // Zones the hovered face-up Link Monster points to.
   const pointedZones = (() => {
@@ -235,15 +309,19 @@ export default function DuelView({ client }: { client: DuelClient }) {
   // Revealed cards are shown briefly, then disappear on their own.
   useEffect(() => {
     if (!reveal) return;
-    const t = setTimeout(() => client.dismissReveal(reveal.id), reveal.codes.length ? 1000 : 2000);
+    // Negations stay a little longer: the pop-up shows the card turning negated.
+    const t = setTimeout(() => client.dismissReveal(reveal.id), reveal.kind === "negated" ? 1500 : reveal.codes.length ? 1000 : 2000);
     return () => clearTimeout(t);
   }, [reveal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const pileCards = pileView ? (duel.pile(pileView.player, pileView.location) as DuelCard[]) : [];
+  // Follows the monster while the dialog is open; closes once it has no materials left.
+  const materialsHolder = materialsOf !== null ? duel.allCards().find((c) => c.id === materialsOf && c.overlays.length > 0) : undefined;
 
-  const oppHand = (width: number, maxWidth?: number) => (
+  // Both hands use the same card size.
+  const oppHand = (maxWidth?: number) => (
     <HandRow
       cards={duel.players[opp].hand}
-      width={width}
+      width={W}
       maxWidth={maxWidth}
       hidden
       flipped
@@ -284,7 +362,6 @@ export default function DuelView({ client }: { client: DuelClient }) {
           height: 40,
           flex: "0 0 auto",
           borderRadius: 1,
-          mx: 0.5,
           transition: "background .3s ease, box-shadow .3s ease",
           background: active ? (player === me ? "linear-gradient(90deg, rgba(245,197,24,.38), rgba(245,197,24,.12))" : "linear-gradient(90deg, rgba(190,190,190,.38), rgba(190,190,190,.12))") : "rgba(255,255,255,.03)",
           boxShadow: active ? `inset 0 0 0 1px ${player === me ? "rgba(245,197,24,.6)" : "rgba(190,190,190,.6)"}` : "none",
@@ -318,18 +395,116 @@ export default function DuelView({ client }: { client: DuelClient }) {
     );
   };
 
+  /** Drawn inside the field window: arrows, effects, revealed cards and waiting notes. */
+  const fieldOverlays = (
+    <>
+      <LinesOverlay links={links} version={client.rev} />
+      <FxOverlay fx={duel.fx} me={me} onDone={(id) => client.dismissFx(id)} />
+
+      {/* Revealed cards / messages: shown briefly, no click needed */}
+      {reveal && (
+        <Paper
+          key={reveal.id}
+          elevation={12}
+          sx={{
+            // Centred in the field window.
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            zIndex: 1600,
+            p: 1.5,
+            pointerEvents: "none",
+            maxWidth: "90%",
+            animation: "revealIn .18s ease-out",
+            "@keyframes revealIn": { from: { opacity: 0, transform: "translate(-50%, -46%) scale(.96)" }, to: { opacity: 1, transform: "translate(-50%, -50%) scale(1)" } },
+          }}
+        >
+          {/* Cards speak for themselves: text only when nothing is shown (coin toss, messages). */}
+          {reveal.codes.length === 0 && (
+            <Typography variant="subtitle2" sx={{ textAlign: "center" }}>
+              {reveal.title}
+            </Typography>
+          )}
+          {reveal.codes.length > 0 && (
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, justifyContent: "center" }}>
+              {reveal.codes.map((c, i) => (
+                <CardImage key={i} code={c} width={reveal.kind === "negated" ? 110 : 84} negated={reveal.kind === "negated"} negateIntro />
+              ))}
+            </Box>
+          )}
+        </Paper>
+      )}
+
+      {(client.status === "rps-wait" || client.status === "order-wait" || client.status === "side-wait" || client.status === "rematch-wait") &&
+        !(duel.winner && client.status === "rematch-wait") && (
+        <Box sx={{ position: "absolute", left: "50%", top: 12, transform: "translateX(-50%)", zIndex: 1500, maxWidth: "90%" }}>
+          <Alert severity="info" variant="filled">
+            {/* Between games of a match, the last game's result stays on screen. */}
+            {duel.winner && winnerText ? `${winnerText}. ` : ""}
+            {client.status === "rps-wait"
+              ? "Waiting for the opponent's choice…"
+              : client.status === "order-wait"
+                ? "Waiting for the next duel to start…"
+                : client.status === "side-wait"
+                  ? client.isObserver
+                    ? "The duelists are side decking…"
+                    : "Waiting for your opponent…"
+                  : "Waiting for the rematch answer…"}
+          </Alert>
+        </Box>
+      )}
+
+    </>
+  );
+
   return (
+    <FieldWindow.Provider value={field}>
     <Box sx={{ height: "100vh", display: "flex", overflow: "hidden" }}>
-      {/* Left: card details */}
-      <Paper square elevation={0} sx={{ width: 280, borderRight: 1, borderColor: "divider", overflowY: "auto", display: { xs: "none", lg: "block" } }}>
+      {/* Left: card details. Everything around the field window is layered above it, so
+          pop-ups and effects from the field never cover it. */}
+      <Paper
+        square
+        elevation={0}
+        sx={{
+          width: 280,
+          flex: "0 0 280px",
+          borderRight: 1,
+          borderColor: "divider",
+          overflow: "hidden",
+          display: { xs: "none", lg: "block" },
+          position: "relative",
+          zIndex: 2,
+        }}
+      >
         <CardDetail code={hover.code} live={hover.card} imageWidth={220} />
       </Paper>
 
-      {/* Centre: field */}
-      <Stack sx={{ flex: 1, minWidth: 0, py: 0.5 }} spacing={0.5}>
-        {playerBar(opp)}
-        {!handsInBoard && oppHand(Math.round(W * 0.7))}
-        <Box sx={{ position: "relative", flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
+      {/* Centre: the field window (LP bar to LP bar), then the action bar */}
+      <Stack sx={{ flex: 1, minWidth: 0 }}>
+        <Box
+          ref={setField}
+          data-field-window
+          sx={{
+            // Its own layer under the panels: pop-ups (FieldDialog) and effects stay inside it.
+            position: "relative",
+            zIndex: 0,
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            p: `${FIELD_PAD}px`,
+            overflow: "hidden",
+          }}
+        >
+        {/* LP bar, hand, field, hand, LP bar as one block, centred in the field window. The LP
+            bars are as wide as the field; the hands sit against the field's edges. */}
+        <Box ref={setBlock} sx={{ width: boardWidth, maxWidth: "100%", flex: "0 0 auto", display: "flex", flexDirection: "column", alignItems: "stretch" }}>
+        <Box sx={{ mb: `${ROW_GAP}px` }}>{playerBar(opp)}</Box>
+        {!handsInBoard && <Box sx={{ mb: `${HAND_GAP}px` }}>{oppHand()}</Box>}
+        <Box sx={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Board
             duel={duel}
             cardWidth={W}
@@ -340,12 +515,16 @@ export default function DuelView({ client }: { client: DuelClient }) {
             selectableZones={placeKeys}
             selectedZones={new Set(placeSel.map(zoneKey))}
             pointedZones={pointedZones}
+            glowZones={glowZones}
+            picks={duel.materialPicks}
+            boardVoid={boardVoid}
             disabledZones={disabled}
             onCardClick={onCardClick}
             onZoneClick={onZoneClick}
             onPileClick={(player, location) => setPileView({ player, location })}
+            onMaterialsClick={(card) => setMaterialsOf(card.id)}
             onHover={onHover}
-            oppHand={handsInBoard ? oppHand(Math.round(W * 0.85), handWidth) : undefined}
+            oppHand={handsInBoard ? oppHand(handWidth) : undefined}
             myHand={handsInBoard ? myHand(handWidth) : undefined}
             center={
               duel.turn > 0 ? (
@@ -372,10 +551,13 @@ export default function DuelView({ client }: { client: DuelClient }) {
             }
           />
         </Box>
-        {!handsInBoard && myHand()}
-        {playerBar(me)}
+        {!handsInBoard && <Box sx={{ mt: `${HAND_GAP}px` }}>{myHand()}</Box>}
+        <Box sx={{ mt: `${ROW_GAP}px` }}>{playerBar(me)}</Box>
+        </Box>
+        {fieldOverlays}
+        </Box>
         {/* Prompt / action bar */}
-        <Paper square elevation={0} sx={{ borderTop: 1, borderColor: "divider", px: 1, height: 48, flex: "0 0 auto", display: "flex", alignItems: "center" }}>
+        <Paper square elevation={0} sx={{ position: "relative", zIndex: 2, borderTop: 1, borderColor: "divider", px: 1, height: 48, flex: "0 0 auto", display: "flex", alignItems: "center" }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
             <Typography
               variant="body2"
@@ -430,7 +612,7 @@ export default function DuelView({ client }: { client: DuelClient }) {
       </Stack>
 
       {/* Right: log and chat */}
-      <Paper square elevation={0} sx={{ width: 300, borderLeft: 1, borderColor: "divider", display: { xs: "none", md: "flex" }, flexDirection: "column" }}>
+      <Paper square elevation={0} sx={{ position: "relative", zIndex: 2, width: 300, borderLeft: 1, borderColor: "divider", display: { xs: "none", md: "flex" }, flexDirection: "column" }}>
         <Tabs value={sideTab} onChange={(_, v) => setSideTab(v)} variant="fullWidth">
           <Tab label="Log" />
           <Tab label="Chat" />
@@ -443,7 +625,7 @@ export default function DuelView({ client }: { client: DuelClient }) {
                   key={l.id}
                   variant="body2"
                   onMouseEnter={() => l.codes[0] && setHover({ code: l.codes[0], card: null })}
-                  sx={{ fontSize: 12.5, py: 0.25, borderBottom: "1px solid rgba(255,255,255,.04)", color: l.player === undefined ? "text.secondary" : l.player === me ? "#f5c518" : "#bdbdbd" }}
+                  sx={{ fontSize: 12.5, py: 0.25, borderBottom: "1px solid rgba(255,255,255,.04)", color: l.kind === "turn" ? "#ff5252" : l.player === undefined ? "text.secondary" : l.player === me ? "#f5c518" : "#bdbdbd" }}
                 >
                   {l.text}
                 </Typography>
@@ -469,6 +651,8 @@ export default function DuelView({ client }: { client: DuelClient }) {
             key={i}
             onClick={() => {
               setMenu(null);
+              // Chosen from a card in the pile viewer: close it too.
+              setPileView(null);
               client.respond(a.response);
             }}
           >
@@ -478,7 +662,7 @@ export default function DuelView({ client }: { client: DuelClient }) {
       </Menu>
 
       {/* Pile viewer */}
-      <Dialog open={!!pileView} onClose={() => setPileView(null)} fullWidth maxWidth="md">
+      <FieldDialog open={!!pileView} onClose={() => setPileView(null)} fullWidth maxWidth="md">
         <DialogTitle>
           {pileView && `${pileView.player === me ? "Your" : `${names[pileView.player]}'s`} ${res!.locationName(pileView.location)} (${pileCards.length})`}
         </DialogTitle>
@@ -498,6 +682,19 @@ export default function DuelView({ client }: { client: DuelClient }) {
                       width={76}
                       highlight={acts.length ? "action" : null}
                       onHover={() => visible && setHover({ code: c.code, card: c })}
+                      // The card works like its button(s): one action runs at once, several open a menu.
+                      onClick={
+                        acts.length
+                          ? (e) => {
+                              if (acts.length === 1) {
+                                setPileView(null);
+                                client.respond(acts[0].response);
+                              } else {
+                                setMenu({ el: e.currentTarget, actions: acts, title: c.code ? res!.cards.name(c.code) : "Card" });
+                              }
+                            }
+                          : undefined
+                      }
                     />
                     {acts.map((a, i) => (
                       <Button
@@ -523,10 +720,30 @@ export default function DuelView({ client }: { client: DuelClient }) {
         <DialogActions>
           <Button onClick={() => setPileView(null)}>Close</Button>
         </DialogActions>
-      </Dialog>
+      </FieldDialog>
 
-      <LinesOverlay links={links} version={client.rev} />
-      <FxOverlay fx={duel.fx} me={me} onDone={(id) => client.dismissFx(id)} />
+      {/* Xyz materials */}
+      <FieldDialog open={!!materialsHolder} onClose={() => setMaterialsOf(null)} fullWidth maxWidth="sm">
+        <DialogTitle>
+          {materialsHolder &&
+            `${materialsHolder.code ? res!.cards.name(materialsHolder.code) : "Xyz Monster"}: ${materialsHolder.overlays.length} material${materialsHolder.overlays.length === 1 ? "" : "s"}`}
+        </DialogTitle>
+        <DialogContent dividers>
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+            {materialsHolder?.overlays.map((o) => (
+              <Stack key={o.id} spacing={0.5} sx={{ alignItems: "center", width: 84 }}>
+                <CardImage code={o.code} faceDown={!o.code} width={76} onHover={() => o.code && setHover({ code: o.code, card: o })} />
+                <Typography variant="caption" sx={{ textAlign: "center", lineHeight: 1.2, wordBreak: "break-word" }}>
+                  {o.code ? res!.cards.name(o.code) : "Unknown"}
+                </Typography>
+              </Stack>
+            ))}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMaterialsOf(null)}>Close</Button>
+        </DialogActions>
+      </FieldDialog>
 
       {/* Selection prompts */}
       {showPrompt && prompt && (
@@ -539,39 +756,8 @@ export default function DuelView({ client }: { client: DuelClient }) {
         />
       )}
 
-      {/* Revealed cards / messages: shown briefly, no click needed */}
-      {reveal && (
-        <Paper
-          key={reveal.id}
-          elevation={12}
-          sx={{
-            position: "fixed",
-            left: "50%",
-            top: "42%",
-            transform: "translate(-50%, -50%)",
-            zIndex: 1600,
-            p: 1.5,
-            pointerEvents: "none",
-            maxWidth: "80vw",
-            animation: "revealIn .18s ease-out",
-            "@keyframes revealIn": { from: { opacity: 0, transform: "translate(-50%, -46%) scale(.96)" }, to: { opacity: 1, transform: "translate(-50%, -50%) scale(1)" } },
-          }}
-        >
-          <Typography variant="subtitle2" sx={{ mb: reveal.codes.length ? 1 : 0, textAlign: "center" }}>
-            {reveal.title}
-          </Typography>
-          {reveal.codes.length > 0 && (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, justifyContent: "center" }}>
-              {reveal.codes.map((c, i) => (
-                <CardImage key={i} code={c} width={reveal.kind === "negated" ? 110 : 84} negated={reveal.kind === "negated"} />
-              ))}
-            </Box>
-          )}
-        </Paper>
-      )}
-
       {/* Pre-duel: rock paper scissors and turn order */}
-      <Dialog open={client.status === "rps"} maxWidth="xs" fullWidth>
+      <FieldDialog open={client.status === "rps"} maxWidth="xs" fullWidth>
         <DialogTitle>Rock, paper, scissors</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary">
@@ -589,8 +775,8 @@ export default function DuelView({ client }: { client: DuelClient }) {
             ✌️ Scissors
           </Button>
         </DialogActions>
-      </Dialog>
-      <Dialog open={client.status === "choose-order"} maxWidth="xs" fullWidth>
+      </FieldDialog>
+      <FieldDialog open={client.status === "choose-order"} maxWidth="xs" fullWidth>
         <DialogTitle>{client.rpsResult ? "You won rock-paper-scissors" : "Choose turn order"}</DialogTitle>
         <DialogActions sx={{ justifyContent: "center" }}>
           <Button variant="contained" onClick={() => client.chooseOrder(true)}>
@@ -600,26 +786,25 @@ export default function DuelView({ client }: { client: DuelClient }) {
             {res!.sys(101)}
           </Button>
         </DialogActions>
-      </Dialog>
-      {(client.status === "rps-wait" || client.status === "order-wait" || client.status === "side-wait" || client.status === "rematch-wait") && !duel.winner && (
-        <Box sx={{ position: "fixed", left: "50%", top: 16, transform: "translateX(-50%)", zIndex: 1500 }}>
-          <Alert severity="info" variant="filled">
-            {client.status === "rps-wait"
-              ? "Waiting for the opponent's choice…"
-              : client.status === "order-wait"
-                ? "Waiting for the turn order…"
-                : client.status === "side-wait"
-                  ? "Waiting for the opponent to side deck…"
-                  : "Waiting for the rematch answer…"}
-          </Alert>
-        </Box>
+      </FieldDialog>
+      {/* Side decking between games of a match */}
+      {client.status === "siding" && client.deck && (
+        <SideDeckDialog deck={client.deck} result={winnerText ?? undefined} onSubmit={(d) => client.submitSide(d)} />
       )}
 
-      {/* Side decking between games of a match */}
-      {client.status === "siding" && client.deck && <SideDeckDialog deck={client.deck} onSubmit={(d) => client.submitSide(d)} />}
-
       {/* End of duel */}
-      <Dialog open={!!winnerText && (client.status === "closed" || client.status === "rematch" || client.status === "rematch-wait" || client.status === "dueling")} maxWidth="xs" fullWidth>
+      {/* In a match, a game's end leads to side decking; only the last game (DUEL_END -> closed) shows this. */}
+      <FieldDialog
+        open={
+          !!winnerText &&
+          (client.status === "closed" ||
+            client.status === "rematch" ||
+            client.status === "rematch-wait" ||
+            (client.status === "dueling" && (client.hostInfo?.bestOf ?? 1) <= 1))
+        }
+        maxWidth="xs"
+        fullWidth
+      >
         <DialogTitle>{winnerText}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary">
@@ -641,9 +826,9 @@ export default function DuelView({ client }: { client: DuelClient }) {
             </Button>
           )}
         </DialogActions>
-      </Dialog>
+      </FieldDialog>
 
-      <Dialog open={confirmSurrender} onClose={() => setConfirmSurrender(false)}>
+      <FieldDialog open={confirmSurrender} onClose={() => setConfirmSurrender(false)}>
         <DialogTitle>Surrender this duel?</DialogTitle>
         <DialogActions>
           <Button onClick={() => setConfirmSurrender(false)}>Cancel</Button>
@@ -658,9 +843,9 @@ export default function DuelView({ client }: { client: DuelClient }) {
             Surrender
           </Button>
         </DialogActions>
-      </Dialog>
+      </FieldDialog>
       {client.status === "closed" && !duel.winner && (
-        <Dialog open maxWidth="xs" fullWidth>
+        <FieldDialog open maxWidth="xs" fullWidth>
           <DialogTitle>Disconnected</DialogTitle>
           <DialogContent>
             <Typography variant="body2">{client.error ?? "The connection to the server was closed."}</Typography>
@@ -670,8 +855,9 @@ export default function DuelView({ client }: { client: DuelClient }) {
               Back to lobby
             </Button>
           </DialogActions>
-        </Dialog>
+        </FieldDialog>
       )}
     </Box>
+    </FieldWindow.Provider>
   );
 }

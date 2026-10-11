@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from "@mui/material";
+import { Box, Button, DialogActions, DialogContent, DialogTitle, Typography } from "@mui/material";
+import FieldDialog from "./FieldDialog";
 import { CardImage } from "../CardImage";
 import type { Deck } from "@/lib/protocol/ydk";
 
 type Section = "main" | "extra" | "side";
 
 /** Swap cards between Main/Extra and Side. Sizes stay the same, as the server requires. */
-export default function SideDeckDialog({ deck, onSubmit }: { deck: Deck; onSubmit: (d: Deck) => void }) {
+export default function SideDeckDialog({ deck, result, onSubmit }: { deck: Deck; result?: string; onSubmit: (d: Deck) => void }) {
   const [d, setD] = useState<Deck>(() => ({ main: [...deck.main], extra: [...deck.extra], side: [...deck.side] }));
   const [picked, setPicked] = useState<{ section: Section; index: number } | null>(null);
 
@@ -39,8 +40,8 @@ export default function SideDeckDialog({ deck, onSubmit }: { deck: Deck; onSubmi
   );
 
   return (
-    <Dialog open fullWidth maxWidth="lg">
-      <DialogTitle>Side deck for the next duel</DialogTitle>
+    <FieldDialog open fullWidth maxWidth="lg">
+      <DialogTitle>{result ? `${result} · ` : ""}Side deck for the next duel</DialogTitle>
       <DialogContent dividers>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           Click a card in your Main or Extra Deck, then a card in your Side Deck, to swap them.
@@ -55,6 +56,6 @@ export default function SideDeckDialog({ deck, onSubmit }: { deck: Deck; onSubmi
           Done
         </Button>
       </DialogActions>
-    </Dialog>
+    </FieldDialog>
   );
 }

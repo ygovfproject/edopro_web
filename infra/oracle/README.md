@@ -1,7 +1,8 @@
 # Proxy on Oracle Cloud (Always Free)
 
 Creates one Always Free VM with the EDOPro web proxy behind Caddy (automatic
-HTTPS, WebSockets), plus the network it needs. Terraform runs on your PC with
+HTTPS, WebSockets), plus the network it needs. The proxy also hosts the accounts and
+cloud-deck API, with its SQLite database on the VM's own disk. Terraform runs on your PC with
 your own OCI API key; no credentials are stored here.
 
 ## One-time setup
@@ -45,9 +46,29 @@ NEXT_PUBLIC_PROXY_URL=https://1-2-3-4.sslip.io
 - **"Out of host capacity"**: Arm capacity is often short. Try
   `availability_domain_index = 1` or `2`, retry later, or use
   `shape = "VM.Standard.E2.1.Micro"` (x86, 1 GB RAM, still plenty for the proxy).
-- **Updating the proxy code**: `.\update-proxy.ps1 -Ip <public_ip>`. The server
-  config lives in `/opt/edopro-proxy/config.json`
-  (`sudo systemctl restart edopro-proxy` after editing).
+- **Updating the proxy**: `terraform apply`. The `proxy_deploy` step uploads the current
+  proxy code, config (built from `terraform.tfvars`), the systemd service and the
+  maintenance timer over SSH and restarts the proxy, whenever any of them changed. It uses
+  `ssh_private_key_path` (default `~/.ssh/id_ed25519`). It changes nothing in Oracle Cloud and
+  never replaces the VM. `.\update-proxy.ps1 -Ip <public_ip>` still copies just the code.
+  Don't edit `/opt/edopro-proxy/config.json` by hand: the next apply overwrites it.
+- **Accounts database**: `/var/lib/edopro-proxy/accounts.db` (owned by the service user,
+  not reachable over the network; no extra ports are opened).
+- **Daily maintenance** (`edopro-maintenance.timer`, around 03:30 server time): deletes
+  accounts inactive for 90 days with their decks and sessions, deletes expired sessions,
+  and backs up the database to `/var/lib/edopro-proxy/backups/` (newest 7 kept). Check it
+  with `systemctl list-timers edopro-maintenance.timer` and
+  `journalctl -u edopro-maintenance`; run it now with
+  `sudo systemctl start edopro-maintenance`.
+- **Backups** stay on the VM's disk, so they protect against mistakes and corruption, not
+  against losing the VM. To keep a copy elsewhere:
+  `scp ubuntu@<ip>:/var/lib/edopro-proxy/backups/<newest>.db .` (needs `sudo cp` to a
+  readable place first, the folder is private). To restore: stop the service, replace
+  `accounts.db` with the backup (and delete `accounts.db-wal` / `-shm`), start it again.
+  Deleted accounts remain in the backups for up to 7 days; copies you keep elsewhere hold
+  them for as long as you keep those copies.
+- **Node.js**: the deploy step upgrades Node to 22.13+ (needed for `node:sqlite`) if the VM
+  has an older version.
 - **Logs**: `ssh ubuntu@<ip>` then `journalctl -u edopro-proxy -f`, setup log in
   `/var/log/cloud-init-output.log`.
 - **Remove everything**: `terraform destroy`.

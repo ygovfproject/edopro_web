@@ -142,11 +142,77 @@ async headers() {
 - **Web elsewhere**: `npm run build` writes a static site to `web/out/`. Host it anywhere
   (nginx, S3...). For a sub-path, build with `NEXT_PUBLIC_BASE_PATH=/sub-path`. URLs from
   `.env` are baked in at build time, so rebuild after changing them.
-- **Proxy**: `node src/server.mjs config.json` on any host with Node 20+. Put it behind
+- **Proxy**: `node src/server.mjs config.json` on any host with Node 22.13+ (`npm start`). Put it behind
   TLS (nginx/Caddy) and use `https://` in `NEXT_PUBLIC_PROXY_URL` when the site is served over HTTPS:
   browsers block `ws://` from `https://` pages. Set `allowedOrigins` to your site's origin.
   Set `trustProxy: true` if it sits behind a reverse proxy, so the per-IP limit uses the
   real client IP.
+
+## Accounts and cloud decks
+
+Players can create an account and keep up to 10 decks on the server, to load them on any
+device (Decks tab → **Cloud decks**). Decks stored in the browser keep working without an
+account. The API is part of the proxy (`proxy/src/accounts.mjs`) and is on when the proxy
+config has `"accounts": { "dbPath": "data/accounts.db" }`.
+
+- **Storage**: one SQLite file (Node's built-in `node:sqlite`, no extra packages) with
+  tables `users`, `sessions` and `decks`. Schema migrations run on startup
+  (`proxy/src/db.mjs`). The database is a file on the server, never reachable from the
+  network. Decks keep the `.ydk` exactly as uploaded (max 100 KiB each).
+- **Accounts**: a unique username (3–19 characters: letters, digits, `_ . -`, compared
+  case-insensitively) and a password (8–128 characters), hashed with scrypt. There is no
+  email, so **a forgotten password can't be recovered**; the sign-up form says so. Players
+  can delete their own account (with their password).
+- **Sessions**: a random token sent as `Authorization: Bearer …` (the site and the API are
+  on different domains, where browsers block cookies). The database only stores a SHA-256 of
+  each token. Sessions expire 30 days after their last use; at most 20 per user (the least
+  recently used are dropped); signing out deletes the session.
+- **Limits** (429 with `Retry-After` when exceeded), counted in memory by the proxy:
+
+  | What | Limit |
+  |---|---|
+  | Any request, signed in | 120 / minute per user |
+  | Any request, not signed in | 60 / minute per IP |
+  | Listing decks | 30 / minute per user |
+  | Saving, updating, deleting decks | 10 / minute per user |
+  | Login attempts | 5 / 15 minutes per IP |
+  | Failed logins to one account | 10 / 15 minutes per username (from any IP) |
+  | Password checks when deleting the account | 5 / 15 minutes per user |
+  | New accounts | 5 / hour per IP |
+
+  "Per IP" counts an IPv6 client's whole /64 as one address. The per-username limit means
+  someone guessing a password can make that account wait up to 15 minutes to sign in;
+  existing sessions keep working. At most 4 password hashes are computed at once; beyond
+  that the API answers 503 ("busy, try again"), so a login flood can't starve the duels.
+
+  Other protections: request size caps (4 KiB for sign-in, ~200 KiB for decks; 413), a
+  30-second request timeout, input validation, parameterised SQL only, the same response
+  time and error for unknown users and wrong passwords, another user's deck answers like a
+  missing one, and the 10-deck limit is enforced inside a write transaction plus a
+  database trigger, so parallel requests can't exceed it. Malformed requests get 400 and
+  never stop the service.
+- **Inactive accounts**: every sign-in and signed-in request counts as activity. **Accounts
+  with no activity for 90 days are deleted automatically, with their decks and sessions.**
+  `npm run maintenance` (`proxy/src/maintenance.mjs`) does that, deletes expired sessions
+  and writes a backup copy of the database to `backups/` next to it, keeping the newest 7.
+  On the Oracle server a systemd timer runs it daily (see `infra/oracle`). **Backups are
+  daily copies kept for 7 days, so a deleted account (by its owner or by the 90-day
+  cleanup) can remain in a backup for up to 7 more days**, after which the last copy
+  holding it is removed.
+
+API (JSON; all paths need a session except register and login):
+
+```
+POST   /api/auth/register  {username, password}  -> 201 {token, user}
+POST   /api/auth/login     {username, password}  -> 200 {token, user}
+POST   /api/auth/logout                          -> 204
+GET    /api/auth/me                              -> 200 {user}
+DELETE /api/auth/account   {password}            -> 204   (deletes the account and its decks)
+GET    /api/decks                                -> 200 {decks: [{id, name, ydk, createdAt, updatedAt}], limit}
+POST   /api/decks          {name, ydk}           -> 201 {deck}   (409 at 10 decks)
+PUT    /api/decks/:id      {name, ydk}           -> 200 {deck}
+DELETE /api/decks/:id                            -> 204
+```
 
 ## Things to know
 
@@ -161,13 +227,18 @@ async headers() {
   and remembers it.
 - **Scope.** Online only: room list, host, join, spectate, Single/Match (with side
   decking), rematch, chat. No AI, LAN, replays or deck editor. Decks come from `.ydk`
-  files or `ydke://` links and are kept in the browser's local storage.
+  files or `ydke://` links and are kept in the browser's local storage, and optionally
+  in the cloud (see above).
 
 ## Project layout
 
 ```
 proxy/src/server.mjs        HTTP + WebSocket server, room-list relay
 proxy/src/websocket.mjs     minimal RFC 6455 implementation (binary frames)
+proxy/src/accounts.mjs      accounts and cloud decks API
+proxy/src/db.mjs            SQLite database and schema migrations
+proxy/src/ratelimit.mjs     rate limits
+proxy/src/maintenance.mjs   daily cleanup of inactive accounts + database backup
 proxy/test/                 node --test suite (npm test)
 
 web/src/lib/protocol/       EDOPro packets, HostInfo, game messages, queries, responses, banlists, .ydk
@@ -181,8 +252,15 @@ web/src/components/         UI (lobby, room, duel board, prompt dialogs, deck ma
 
 ## How it was tested
 
-- The proxy has a `node --test` suite: WebSocket framing including 64 KiB+ frames, room
-  list relay with CORS, per-IP limits, and unknown servers.
+- The proxy has a `node --test` suite (`npm test`): WebSocket framing including
+  64 KiB+ frames, room list relay with CORS, per-IP limits, unknown servers, and malformed
+  URLs that must not crash the service; and for
+  accounts: registration, login, logout, session expiry and limits, input validation,
+  deck create/update/delete with the `.ydk` kept byte for byte, the 100 KiB and 10-deck
+  limits (also with 15 parallel saves), access to another user's decks, every rate limit
+  (including per-username and IPv6 /64 grouping), oversized bodies with and without
+  `Content-Length`, the cap on concurrent password hashing, forged `X-Forwarded-For`
+  headers, the 90-day cleanup and backups.
 - The protocol, board model and action mapping were run headless against a test server
   using the **real ygopro-core and Project Ignis card scripts**, through this proxy. That
   test server re-implements Multirole's room flow, message filtering and query refreshes.

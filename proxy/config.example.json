@@ -8,6 +8,7 @@
   "trustProxy": false,
   "maxConnectionsPerIp": 8,
   "maxConnections": 1000,
+  "accounts": { "dbPath": "data/accounts.db" },
   "servers": [
     {
       "id": "eu-casual",

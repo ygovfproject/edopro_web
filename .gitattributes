@@ -1,0 +1,10 @@
+# Files that run on the Linux server (or are rendered into scripts for it) must keep
+# LF line endings, even when the repository is checked out on Windows.
+*.sh     text eol=lf
+*.tftpl  text eol=lf
+*.mjs    text eol=lf
+*.json   text eol=lf
+*.tf     text eol=lf
+
+# PowerShell scripts are run on Windows.
+*.ps1    text eol=crlf

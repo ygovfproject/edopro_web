@@ -6,7 +6,6 @@ import {
   Box,
   Button,
   Checkbox,
-  Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
@@ -19,9 +18,10 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import FieldDialog from "./FieldDialog";
 import AddIcon from "@mui/icons-material/Add";
 import RemoveIcon from "@mui/icons-material/Remove";
-import { CardImage } from "../CardImage";
+import { CardImage, cardHeight } from "../CardImage";
 import { useApp } from "../AppContext";
 import type { DuelClient, Prompt } from "@/lib/game/client";
 import { OcgMessageType, type ServerMessage } from "@/lib/protocol/gamemsg";
@@ -107,7 +107,7 @@ function Shell({
   maxWidth?: "xs" | "sm" | "md" | "lg";
 }) {
   return (
-    <Dialog open fullWidth maxWidth={maxWidth} disableEscapeKeyDown>
+    <FieldDialog open fullWidth maxWidth={maxWidth} disableEscapeKeyDown>
       <DialogTitle sx={{ pb: 1 }}>{title}</DialogTitle>
       <DialogContent dividers>{children}</DialogContent>
       <DialogActions>
@@ -118,7 +118,7 @@ function Shell({
         )}
         {actions}
       </DialogActions>
-    </Dialog>
+    </FieldDialog>
   );
 }
 
@@ -304,7 +304,17 @@ function SelectUnselect({ client, prompt, msg, onHover, onMinimize }: PromptProp
           <Typography variant="overline">Selected (click to remove)</Typography>
           <Grid>
             {msg.unselect_cards.map((c, i) => (
-              <Tile key={`u${i}`} code={knownCode(client, c)} label={loc(client, c)} selected onClick={() => client.respond(respond.unselect(n + i))} onHover={onHover} />
+              <Tile
+                key={`u${i}`}
+                code={knownCode(client, c)}
+                label={loc(client, c)}
+                selected
+                onClick={() => {
+                  client.pickMaterial(c, false);
+                  client.respond(respond.unselect(n + i));
+                }}
+                onHover={onHover}
+              />
             ))}
           </Grid>
         </>
@@ -312,7 +322,16 @@ function SelectUnselect({ client, prompt, msg, onHover, onMinimize }: PromptProp
       <Typography variant="overline">Choose</Typography>
       <Grid>
         {msg.select_cards.map((c, i) => (
-          <Tile key={`s${i}`} code={knownCode(client, c)} label={loc(client, c)} onClick={() => client.respond(respond.unselect(i))} onHover={onHover} />
+          <Tile
+            key={`s${i}`}
+            code={knownCode(client, c)}
+            label={loc(client, c)}
+            onClick={() => {
+              client.pickMaterial(c, true);
+              client.respond(respond.unselect(i));
+            }}
+            onHover={onHover}
+          />
         ))}
       </Grid>
     </Shell>
@@ -424,7 +443,10 @@ function SelectPosition({ client, msg, onHover }: PromptProps & { msg: Msg<"SELE
           .filter(([p]) => msg.positions & p)
           .map(([p, label, down, def]) => (
             <Stack key={p} spacing={1} sx={{ alignItems: "center" }}>
-              <CardImage code={msg.code} width={80} faceDown={down} sideways={def} onClick={() => client.respond(respond.position(p))} onHover={onHover} />
+              {/* Same height for every option, so Defense cards sit in the middle. */}
+              <Box sx={{ height: cardHeight(80), display: "flex", alignItems: "center" }}>
+                <CardImage code={msg.code} width={80} faceDown={down} sideways={def} onClick={() => client.respond(respond.position(p))} onHover={onHover} />
+              </Box>
               <Button size="small" onClick={() => client.respond(respond.position(p))}>
                 {label}
               </Button>

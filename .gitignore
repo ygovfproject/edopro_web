@@ -22,6 +22,12 @@ crash.log
 crash.*.log
 *.tfplan
 
+# Accounts database and its backups (proxy "accounts.dbPath")
+proxy/data/
+*.db
+*.db-wal
+*.db-shm
+
 # Keys and credentials
 *.pem
 *.key

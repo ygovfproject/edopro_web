@@ -28,7 +28,7 @@ const RULES = ["OCG", "TCG", "OCG/TCG", "OCG/TCG + Prerelease", "Any"];
 
 export default function RoomView({ client }: { client: DuelClient }) {
   useClientState(client);
-  const { decks, res, settings, updateSettings, closeClient } = useApp();
+  const { decks, res, settings, updateSettings, closeClient, user } = useApp();
   const info = client.hostInfo!;
   const [t1, t2] = client.teamSizes;
   const isDuelist = !client.isObserver;
@@ -131,10 +131,15 @@ export default function RoomView({ client }: { client: DuelClient }) {
         </Typography>
 
         {deckError && <Alert severity="error">{deckError}</Alert>}
-        {decks.length === 0 && (
-          <Alert severity="info">You have no decks yet, so you can only spectate. Upload a .ydk in the Decks tab to duel.</Alert>
+        {!user ? (
+          <Alert severity="info">You&apos;re a guest, so you can only watch. Sign in to duel.</Alert>
+        ) : (
+          decks.length === 0 && (
+            <Alert severity="info">You have no decks yet, so you can only spectate. Upload a .ydk in the Decks tab to duel.</Alert>
+          )
         )}
 
+        {user && (
         <Paper variant="outlined" sx={{ p: 2 }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
             <TextField
@@ -183,6 +188,7 @@ export default function RoomView({ client }: { client: DuelClient }) {
             )}
           </Stack>
         </Paper>
+        )}
 
         <Paper variant="outlined">
           <ChatBox client={client} height={240} />

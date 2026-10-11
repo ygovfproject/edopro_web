@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2000" width="2000" height="2000">
+  <defs>
+    <clipPath id="fclip"><path d="M609,609 H839 V625 H1161 V609 H1391 V839 H1375 V1161 H1391 V1391 H1161 V1375 H839 V1391 H609 V1161 H625 V839 H609 Z" fill-rule="evenodd"/></clipPath>
+    <linearGradient id="fmetal" gradientUnits="userSpaceOnUse" x1="609" y1="820" x2="1391" y2="1180">
+      <stop offset="0"    stop-color="#2f3338"/>
+      <!-- <stop offset="0.10" stop-color="#525860"/> -->
+      <stop offset="0.28" stop-color="#2b2f33"/>
+      <stop offset="0.45" stop-color="#272a2e"/>
+      <stop offset="0.75" stop-color="#212326"/>
+      <stop offset="1"    stop-color="#272a2e"/>
+    </linearGradient>
+    <radialGradient id="fglow" gradientUnits="userSpaceOnUse" cx="1000" cy="1000" r="292">
+      <stop offset="0"    stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#FFFFFF"/>
+      <stop offset="0.86" stop-color="#E6F9FF"/>
+      <stop offset="1"    stop-color="#C2F0FF"/>
+    </radialGradient>
+  </defs>
+
+  <!-- dark metal frame: notched square with the octagon knocked out -->
+  <g clip-path="url(#fclip)">
+    <path fill-rule="evenodd" fill="url(#fmetal)" d="M609,609 H839 V625 H1161 V609 H1391 V839 H1375 V1161 H1391 V1391 H1161 V1375 H839 V1391 H609 V1161 H625 V839 H609 Z M838,720 H1162 L1280,838 V1162 L1162,1280 H838 L720,1162 V838 Z"/>
+    <path d="M617,617 H843 V633 H1157 V617 H1383 V843 H1367 V1157 H1383 V1383 H1157 V1367 H843 V1383 H617 V1157 H633 V843 H617 Z"
+          fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linejoin="round" opacity="0.10"/>
+    <path fill-rule="evenodd" fill="none" stroke="#15171A" stroke-width="5" stroke-linejoin="round" d="M609,609 H839 V625 H1161 V609 H1391 V839 H1375 V1161 H1391 V1391 H1161 V1375 H839 V1391 H609 V1161 H625 V839 H609 Z"/>
+  </g>
+
+  <!-- slate accent bars on the octagon's flat edges -->
+  <g fill="#384250">
+    <rect x="839" y="691"  width="322" height="29"/>
+    <rect x="839" y="1280" width="322" height="29"/>
+    <rect x="691" y="839"  width="29"  height="322"/>
+    <rect x="1280" y="839" width="29"  height="322"/>
+  </g>
+
+  <!-- core -->
+  <path d="M838,720 H1162 L1280,838 V1162 L1162,1280 H838 L720,1162 V838 Z" fill="url(#fglow)"/>
+</svg>

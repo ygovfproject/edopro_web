@@ -4,7 +4,7 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import LinkIcon from "@mui/icons-material/Link";
 import { useApp } from "./AppContext";
-import { motion, type AppearStyle } from "@/lib/game/motion";
+import { DROP_MS, FADE_MS, FLY_MS, LIFT, motion, type AppearStyle, type LandPlan } from "@/lib/game/motion";
 import { cardImage } from "@/lib/data/config";
 
 /** Every card is drawn at exactly 59:86 (width:height). */
@@ -23,10 +23,10 @@ interface Props {
   selected?: boolean;
   highlight?: "action" | "select" | "target" | "linked" | null;
   dim?: boolean;
-  /** Greyed out with a red cross (effects negated). */
+  /** Effects negated: greyed out with a red glitch. */
   negated?: boolean;
-  /** Make the negation cross blink (continuous negation on the field). */
-  negatedBlink?: boolean;
+  /** Pop-up: start in colour, then turn negated, to show that it just happened. */
+  negateIntro?: boolean;
   /** DuelCard id: enables move animations and lets overlays find this card. */
   trackId?: number;
   /** Chain link numbers shown as badges on the card. */
@@ -72,18 +72,61 @@ const APPEAR: Record<AppearStyle, [Keyframe, Keyframe, number]> = {
   twist: [{ opacity: 0, transform: "rotate(-540deg) scale(.1)" }, { opacity: 1, transform: "rotate(0) scale(1)" }, 560],
 };
 
+/**
+ * A summoned card's arrival (see LandPlan): hidden for `hold`, then it flies / fades / cuts in
+ * at the fall point above its zone (bigger), waits, and drops into the zone.
+ */
+function landAnimation(el: HTMLElement, plan: LandPlan, prev: DOMRect | undefined, now: DOMRect) {
+  const lift = `translate(0, ${plan.dir * LIFT.rise * now.height}px) scale(${LIFT.scale})`;
+  const at = plan.dropAt !== undefined ? lift : "translate(0, 0) scale(1)";
+  let start = at;
+  if (plan.enter === "fly" && prev && now.width) {
+    const dx = prev.left + prev.width / 2 - (now.left + now.width / 2);
+    const dy = prev.top + prev.height / 2 - (now.top + now.height / 2);
+    start = `translate(${dx}px, ${dy}px) scale(${prev.width / now.width})`;
+  }
+  const enterMs = plan.enter === "fly" ? FLY_MS : plan.enter === "fade" ? FADE_MS : 1;
+  const shown = plan.hold + enterMs;
+  const total = plan.dropAt !== undefined ? Math.max(plan.dropAt, shown) + DROP_MS : shown;
+  const o = (t: number) => Math.min(1, Math.max(0, t / total));
+  const visibleFrom = plan.enter === "fly" ? 1 : 0;
+  const frames: Keyframe[] = [{ offset: 0, transform: start, opacity: visibleFrom, zIndex: 50 }];
+  if (plan.hold > 0) frames.push({ offset: o(plan.hold), transform: start, opacity: visibleFrom, zIndex: 50 });
+  frames.push({ offset: o(shown), transform: at, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
+  if (plan.dropAt !== undefined) {
+    if (plan.dropAt > shown) frames.push({ offset: o(plan.dropAt), transform: lift, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
+    frames.push({ offset: 1, transform: "translate(0, 0) scale(1)", opacity: 1, zIndex: 50 });
+  }
+  // The flight eases out; the fall eases in (set per keyframe above).
+  frames[0].easing = plan.enter === "fly" ? "cubic-bezier(.2,.7,.2,1)" : "linear";
+  if (frames.length > 2 && plan.hold > 0) frames[1].easing = plan.enter === "fly" ? "cubic-bezier(.2,.7,.2,1)" : "ease-out";
+  el.animate(frames, { duration: total, fill: "none" });
+}
+
 function useMoveAnimation(trackId: number | undefined) {
   const ref = useRef<HTMLDivElement>(null);
+  const shown = useRef(trackId);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || trackId === undefined) return;
-    // While an animation runs the rect is mid-flight; keep the stored destination.
-    if (el.getAnimations().length) return;
+    if (el.getAnimations().length) {
+      // While an animation runs the rect is mid-flight; keep the stored destination.
+      if (shown.current === trackId) return;
+      // The element now shows another card: drop the old card's animation and start fresh.
+      el.getAnimations().forEach((a) => a.cancel());
+    }
+    shown.current = trackId;
     const now = el.getBoundingClientRect();
     const prev = lastRects.get(trackId);
     lastRects.set(trackId, now);
     const vanished = motion.vanish.delete(trackId);
     if (vanished && prev) vanishRects.set(trackId, prev);
+    const plan = motion.land.get(trackId);
+    if (plan) {
+      motion.land.delete(trackId);
+      landAnimation(el, plan, prev, now);
+      return;
+    }
     const appear = motion.appear.get(trackId);
     if (appear) {
       // Hidden while an effect plays, then shows up in place instead of flying in.
@@ -111,31 +154,65 @@ function useMoveAnimation(trackId: number | undefined) {
   return ref;
 }
 
-/* ---------- negation cross ---------- */
+/* ---------- negation: red glitch ---------- */
 
-export function NegatedCross({ size, blink }: { size: number; blink?: boolean }) {
-  const s = Math.round(size * 0.7);
+/**
+ * Two red-tinted copies of the picture, sliced into bands that jump sideways, over the
+ * greyed-out card. `intro`: appears after a short delay (the pop-up shows the change).
+ */
+function Glitch({ src, width, height, intro }: { src: string | null; width: number; height: number; intro?: boolean }) {
+  const layer = (shift: number, anim: string) => (
+    <Box
+      sx={{
+        position: "absolute",
+        inset: 0,
+        backgroundColor: src ? undefined : "#7a1010",
+        backgroundImage: src ? `url("${src}")` : undefined,
+        backgroundSize: "cover",
+        filter: "grayscale(1) sepia(1) saturate(6) hue-rotate(-50deg) brightness(.9)",
+        mixBlendMode: "screen",
+        opacity: 0.75,
+        transform: `translateX(${shift}px)`,
+        animation: anim,
+      }}
+    />
+  );
+  const d = Math.max(2, Math.round(width * 0.05));
   return (
     <Box
       sx={{
         position: "absolute",
-        left: "50%",
-        top: "50%",
-        width: s,
-        height: s,
-        transform: "translate(-50%, -50%)",
+        inset: 0,
         pointerEvents: "none",
-        zIndex: 4,
-        filter: "drop-shadow(0 0 3px rgba(0,0,0,.9))",
-        animation: blink ? "negBlink 1.1s ease-in-out infinite" : "negIn .25s ease-out",
-        "@keyframes negBlink": { "0%, 100%": { opacity: 0.95 }, "50%": { opacity: 0.25 } },
-        "@keyframes negIn": { from: { opacity: 0, transform: "translate(-50%, -50%) scale(1.6)" }, to: { opacity: 1, transform: "translate(-50%, -50%) scale(1)" } },
+        overflow: "hidden",
+        borderRadius: "4px",
+        zIndex: 1,
+        opacity: intro ? 0 : 1,
+        animation: intro ? "glitchIn .3s ease-out .45s forwards" : undefined,
+        "@keyframes glitchIn": { to: { opacity: 1 } },
+        "@keyframes glitchA": {
+          "0%, 100%": { clipPath: "inset(0 0 100% 0)" },
+          "8%": { clipPath: "inset(12% 0 70% 0)", transform: `translateX(${-d}px)` },
+          "16%": { clipPath: "inset(55% 0 30% 0)", transform: `translateX(${d}px)` },
+          "24%": { clipPath: "inset(0 0 100% 0)" },
+          "52%": { clipPath: "inset(78% 0 8% 0)", transform: `translateX(${-d * 1.5}px)` },
+          "58%": { clipPath: "inset(35% 0 52% 0)", transform: `translateX(${d}px)` },
+          "64%": { clipPath: "inset(0 0 100% 0)" },
+        },
+        "@keyframes glitchB": {
+          "0%, 100%": { clipPath: "inset(100% 0 0 0)" },
+          "30%": { clipPath: "inset(40% 0 44% 0)", transform: `translateX(${d}px)` },
+          "36%": { clipPath: "inset(5% 0 82% 0)", transform: `translateX(${-d}px)` },
+          "42%": { clipPath: "inset(100% 0 0 0)" },
+          "80%": { clipPath: "inset(62% 0 20% 0)", transform: `translateX(${d * 1.5}px)` },
+          "86%": { clipPath: "inset(100% 0 0 0)" },
+        },
       }}
     >
-      <svg viewBox="0 0 100 100" width={s} height={s}>
-        <line x1="14" y1="14" x2="86" y2="86" stroke="#e53935" strokeWidth="14" strokeLinecap="round" />
-        <line x1="86" y1="14" x2="14" y2="86" stroke="#e53935" strokeWidth="14" strokeLinecap="round" />
-      </svg>
+      {/* A faint red wash over the whole card, plus the jumping slices. */}
+      <Box sx={{ position: "absolute", inset: 0, bgcolor: "rgba(229,57,53,.18)", mixBlendMode: "screen" }} />
+      {layer(-d, "glitchA 1.6s steps(1, end) infinite")}
+      {layer(d, "glitchB 2.1s steps(1, end) infinite")}
     </Box>
   );
 }
@@ -158,7 +235,7 @@ function CardImageInner({
   highlight,
   dim,
   negated,
-  negatedBlink,
+  negateIntro,
   trackId,
   chainLinks,
   onClick,
@@ -180,7 +257,7 @@ function CardImageInner({
         : highlight === "target"
           ? "0 0 0 2px #ff6b6b, 0 0 10px 2px rgba(255,107,107,.6)"
           : highlight === "linked"
-            ? "0 0 0 2px #ffffff, 0 0 12px 3px rgba(255,255,255,.65)"
+            ? "0 0 0 2px #ffffff, 0 0 14px 4px rgba(255,255,255,.8)"
             : "none";
   const outerW = sideways ? height : width;
   const outerH = sideways ? width : height;
@@ -215,8 +292,12 @@ function CardImageInner({
           boxShadow: selected ? "0 0 0 3px #f5c518, 0 0 12px 3px rgba(245,197,24,.8)" : ring,
           overflow: "hidden",
           bgcolor: "#111111",
-          filter: negated ? "grayscale(1) brightness(.85)" : "none",
+          filter: negated && !negateIntro ? "grayscale(1) brightness(.85)" : "none",
           transition: "transform .25s ease, filter .3s ease",
+          // Pop-up: in colour first, then it turns grey as the glitch starts.
+          ...(negated && negateIntro
+            ? { animation: "negateIn .45s ease-in .3s forwards", "@keyframes negateIn": { to: { filter: "grayscale(1) brightness(.85)" } } }
+            : {}),
         }}
       >
         {showBack ? (
@@ -253,7 +334,21 @@ function CardImageInner({
           />
         )}
       </Box>
-      {negated && <NegatedCross size={Math.min(outerW, outerH)} blink={negatedBlink} />}
+      {negated && !showBack && (
+        <Box
+          sx={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            width,
+            height,
+            transform: `translate(-50%, -50%) rotate(${angle}deg)`,
+            pointerEvents: "none",
+          }}
+        >
+          <Glitch src={config && broken !== code ? cardImage(config, code) : null} width={width} height={height} intro={negateIntro} />
+        </Box>
+      )}
       {chainLinks && chainLinks.length > 0 && (
         <Box sx={{ position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)", display: "flex", gap: "2px", zIndex: 5, pointerEvents: "none" }}>
           {chainLinks.map((n) => (

@@ -1,0 +1,60 @@
+i want you to update effects and animations for summon
+
+normal summon and special summon (only for monsters that are originally in main deck, normal, effect and ritual monsters):
+* if monster is 4 or lower lvl - just summon it as it is now
+* if monster is 5 or 6 lvl - palace it first a bit above its zone cell and a bit bigger, then "drop" him with impact effect to his zone cell
+* if monster is 7 or higher level - same as 5-6lvl but bigger impact
+so the animation fo lvl 5+ should be splited into 2 parts: move to fall point, and falling with impact.
+For special summon monsters from main deck (including ritual monsters): remove glowing circle, but make a cell zone glow itself: for ss - yellow, for ritual summon - blue
+
+fo other type of monsters, lets describe process first, and I will use that order to indicate when and which animations should be played.
+
+1. select materials (for synchro: 1.1 - select tuner(s), 1.2 - select non tuner(s))
+2. materials leaves field (or hand for fusion)
+3. select zone to summon monster to
+4. select summon in atk or def (except for link monsters)
+5. summon of monster
+
+if some steps are missed - field state stays unchanged
+
+fusion summon: 2. use swirl/spiral distortion (preferably one that consumes less cpu, do not render on gpu) fot that materials, after they fade-out in destination (gy, banishment or deck) 4. the monster is faded-in with swirl/spiral distortion a bit above his zone cell, then "drop" him with impact effect to his zone cell
+
+synchro summon:
+1.1 on each tuner select, transform him to several glowing rings one above other up to its lvl. if it is un-selected - do exactly same but in reverce
+1.2 on each non-tuner select, transform him to several glowing spheres one above other up to its lvl. if it is un-selected - do exactly same but in reverce 
+2. rings and spheres floats upwards and desolces, after materials fade-out in destination (gy, banishment or deck) 
+5. this animation is splitted into several parts:
+5.1 rings up to total levels of non tuner(s) appear above selected zone cell, rings up to total levels of non tuner(s) comes from above into the rings
+5.2 everything start to glow forming a siluette of a glowing card
+5.3 card stops to glow and card image appears
+5.4 card drops with impact effect to its zone cell
+for all synchto effects use neon-green
+
+xyz summon:
+
+1. on each material select, it transforms to a glowing sphere with color of its attribute
+2. spheres floats upwards and desolces, after materials fade-out in destination (gy, banishment or deck)
+5. this animation is splitted into several parts:
+   5.1 cell bg become this https://reactbits.dev/backgrounds/light-tunnel?pulseSpeed=0.85&speed=0.55&size=1.95&mouseStrength=0&grainIntensity=0&cableCount=49&waviness=0.13&pulseColor=ff0000&cableColor=7C3AED&tunnelColor=000000&mouseInteraction=false&fadeFar=1.8&thickness=1&pulseBlend=0.19&flowDirection=inward&pulseLength=0.26&glow=0&tunnelOpacity=0.67&grain=false&colorVariance=false with pulse color of summoned monster attribute
+   5.2 spheres (with color of summoned monster attribute) up to materials collided from above into the center of selected zone, on last one collide the cell start glowing white
+   5.3 card appears a bit above its zone cell , then "drop" him with impact effect to his zone cell, sining diappears on impact (you can not just turn of, but make it disolve somehow)
+
+link summon:
+
+1. on each material select, it transforms to a glowing neon blue sphere
+2. spheres floats upwards and desolces, after materials fade-out in destination (gy, banishment or deck)
+5. this animation is splitted into several parts:
+   5.1 a structure (i attached an archive) appears above selected zone cell (it hould be as bid so a card can fit into central part of it), all arrows should be not glowing
+   5.2 neon blue spheres fall down one by one to arrows that should be glowing, and they start to glow
+   5.3 in the middle of srtuct a card fade-in
+   5.4 struct fade-out
+   5.5 "drop" card with impact effect to his zone cell
+
+step 5 animation length - 1-2s
+
+pendulum is just a ss, so keep it w/o specific effec0
+also add following:
+
+1. around xyz card, as around orbit, make such spheres float flowing yellow https://reactbits.dev/animations/glow-cursor . atk and def, cain link and attached materials bage should be on top, spheres should not move on same orbit, the orbits should be rotated, for example for 2 materials 2 orbits should looks like x
+2. when an effect is activated on the field, or chain resolved, make card blink and its cell zone glow for a moment with white for monster, light green for spell, light pink for trap
+4. update negate effect: instead of bw filter and red cross, use bw filter and glitch (red), if that card is hovered on the field, show tip that it is negated. in pip up window make a transition from standard state to negated state to indicate that it was negated
