@@ -8,7 +8,6 @@ import { zoneKey, type Zone } from "@/lib/game/actions";
 import { fieldLayout } from "@/lib/game/layout";
 import type { PickForm } from "@/lib/game/motion";
 import { PickLayer } from "./fx/MaterialForm";
-import { BoardVoid } from "./fx/BoardVoid";
 
 export interface ZoneGlow {
   id: number;
@@ -43,8 +42,6 @@ export interface BoardProps {
   onMaterialsClick?: (card: DuelCard) => void;
   /** Zones that glow briefly (activation, chain resolving, Special Summon): zone key -> glow. */
   glowZones?: Map<string, ZoneGlow>;
-  /** Xyz Summon in progress: the void shown behind every cell until the card lands. */
-  boardVoid?: { id: number; cardId: number; color: string; end: number; yellowAt: number } | null;
   /** Picked Synchro/Xyz/Link materials and how they look meanwhile (by DuelCard id). */
   picks?: Map<number, PickForm>;
   /** Shown in the middle of the field, between the two centre Monster Zones. */
@@ -484,8 +481,6 @@ export default function Board(p: BoardProps) {
       data-board
       sx={{
         position: "relative",
-        "@keyframes voidIn": { from: { opacity: 0 }, to: { opacity: 1 } },
-        "@keyframes voidOut": { from: { opacity: 1 }, to: { opacity: 0 } },
         display: "grid",
         gridTemplateColumns: `repeat(${cols}, ${cell}px)`,
         gridTemplateRows: `repeat(${R.rows}, ${cell}px)`,
@@ -493,9 +488,7 @@ export default function Board(p: BoardProps) {
         justifyContent: "center",
       }}
     >
-      {/* Xyz Summon: the void behind every cell. */}
-      {p.boardVoid && <BoardVoid key={p.boardVoid.id} cardId={p.boardVoid.cardId} color={p.boardVoid.color} end={p.boardVoid.end} yellowAt={p.boardVoid.yellowAt} />}
-      {cells}
+            {cells}
     </Box>
   );
 }

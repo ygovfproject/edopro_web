@@ -20,8 +20,8 @@ function count(form: PickForm) {
 
 /**
  * A material as glowing shapes stacked in its zone: Synchro Tuners as rings (one per
- * Level), other Synchro materials as spheres (one per Level), Xyz / Link materials as
- * one sphere. The bottom shape sits in the middle of the cell and the stack grows
+ * Level), other Synchro materials as spheres (one per Level), an Xyz material as one
+ * sphere. The bottom shape sits in the middle of the cell and the stack grows
  * upwards from there.
  *
  * `active` switches between the card and the shapes. Turning on, the shapes come out of
@@ -72,7 +72,9 @@ export function MaterialForm({
         if (ring) {
           return <SynchroRing key={i} size={ringD} style={{ ...common, ...(leaveAnim ? { animation: leaveAnim } : {}) }} />;
         }
-        const shine = shinyDot(form.color);
+        // Synchro spheres are white with a green shine; an Xyz material is a ball in its
+        // Attribute's colour.
+        const shine = form.shape === "sphere" ? colorDot(form.color) : shinyDot(form.color);
         return (
           <Box
             key={i}
@@ -130,6 +132,19 @@ export function SynchroRing({ size, style }: { size: number; style?: React.CSSPr
       sx={{ display: "block", width: img, height: img, ...(style as object) }}
     />
   );
+}
+
+/** A ball in `color` (white highlight, darker rim) shining in that colour, softly twinkling. */
+export function colorDot(color: string) {
+  return {
+    background: `radial-gradient(circle at 38% 34%, #ffffff 0%, ${color} 38%, ${color} 70%, color-mix(in srgb, ${color} 60%, #000) 100%)`,
+    boxShadow: `0 0 4px 1px ${color}, 0 0 12px 4px ${color}cc, 0 0 24px 8px ${color}66`,
+    animation: "dotShine 900ms ease-in-out infinite alternate",
+    "@keyframes dotShine": {
+      from: { filter: "brightness(1)" },
+      to: { filter: `brightness(1.25) drop-shadow(0 0 4px ${color})` },
+    },
+  };
 }
 
 /** A white ball shining in `color`, softly twinkling. */

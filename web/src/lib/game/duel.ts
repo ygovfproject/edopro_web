@@ -7,11 +7,13 @@ import { OcgMessageType, type ServerMessage } from "../protocol/gamemsg";
 import {
   BIG_IMPACT_LEVEL,
   BUMP_MS,
+  RITUAL_BLUE,
   DROP_MS,
   FADE_IN_HOLD,
   FADE_MS,
   FLY_MS,
   MATERIAL_HOLD,
+  XYZ_UP_STAGGER,
   NEON_BLUE,
   NEON_GREEN,
   PAUSE_MS,
@@ -198,7 +200,7 @@ export type SummonFx = ExtraSummon;
 /** A one-off board animation. */
 export interface Fx extends FxCard {
   id: number;
-  kind: SummonFx | "material" | "destroy" | "battle" | "glow" | "impact" | "bump";
+  kind: SummonFx | "ritual" | "material" | "destroy" | "battle" | "glow" | "impact" | "bump";
   /** Bump: the attack target (DuelCard id), or none for a direct attack at `toPlayer`. */
   targetId?: number;
   toPlayer?: number;
@@ -543,6 +545,18 @@ export class DuelState {
     const zone = { player: to.controller, location: LOC.MZONE, sequence: to.sequence };
     this.summonFxCards.add(card.id);
 
+    // Ritual Summon (the tributes or the summon itself are marked Ritual): a ring of blue
+    // flames, the card appears inside it in blue light, drops, and the cell glows blue.
+    if (!kind && !faceDown && reason & REASON.SPSUMMON && (reasons | reason) & REASON.RITUAL) {
+      const tl = summonTimeline("ritual", 1);
+      motion.land.set(card.id, { hold: tl.reveal, enter: tl.enter, dropAt: tl.drop, dir });
+      this.addFx({ ...base, kind: "ritual", dir });
+      this.addFx({ ...base, kind: "impact", tier: level >= BIG_IMPACT_LEVEL ? 2 : 1, delay: tl.impact, dir });
+      this.addFx({ ...base, kind: "glow", zone, color: RITUAL_BLUE, delay: tl.impact, blink: false });
+      this.hold = Math.max(this.hold, tl.impact + 250);
+      return;
+    }
+
     if (!kind) {
       // Normal Summon, Ritual Summon, or any other Special Summon.
       if (faceDown) return;
@@ -560,8 +574,8 @@ export class DuelState {
       // Effects that follow (e.g. "when this card is summoned") wait until it has landed.
       this.hold = Math.max(this.hold, landed + (tier > 0 ? 250 : 80));
       if (special) {
-        // The zone itself glows: yellow for a Special Summon, blue for a Ritual Summon.
-        this.addFx({ ...base, kind: "glow", zone, color: reasons & REASON.RITUAL ? "#4aa8ff" : "#ffd54f", delay: landed, blink: false });
+        // The zone itself glows yellow for a Special Summon.
+        this.addFx({ ...base, kind: "glow", zone, color: "#ffd54f", delay: landed, blink: false });
       }
       return;
     }
@@ -805,6 +819,8 @@ export class DuelState {
               form: picked ?? this.materialForm(kind, card, msg.card),
               previewed: !!picked,
             });
+            // Xyz: the spheres shoot up out of the field one after another.
+            if (kind === "xyz") this.hold = Math.max(this.hold, XYZ_UP_STAGGER);
           }
           this.materials.push({
             at: this.msgCount,

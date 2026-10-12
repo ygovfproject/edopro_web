@@ -23,7 +23,7 @@ interface Props {
   selected?: boolean;
   highlight?: "action" | "select" | "target" | "linked" | null;
   dim?: boolean;
-  /** Effects negated: greyed out with a red glitch. */
+  /** Effects negated: black and white except the reds, with a glitched red cross. */
   negated?: boolean;
   /** Pop-up: start in colour, then turn negated, to show that it just happened. */
   negateIntro?: boolean;
@@ -154,30 +154,69 @@ function useMoveAnimation(trackId: number | undefined) {
   return ref;
 }
 
-/* ---------- negation: red glitch ---------- */
+/* ---------- negation: only reds keep their colour ---------- */
+
+const RED_KEEP_ID = "negate-redkeep";
+/** Bump when the filter below changes. */
+const RED_KEEP_VERSION = "4";
 
 /**
- * Two red-tinted copies of the picture, sliced into bands that jump sideways, over the
- * greyed-out card. `intro`: appears after a short delay (the pop-up shows the change).
+ * Adds the "only reds keep their colour" SVG filter to the page once. It mixes a
+ * black-and-white copy of the picture with the original seen through a mask of how much
+ * redder than green and blue each pixel is: strong and dark reds stay, orange, brown,
+ * magenta and skin tones turn grey. Raise the -5 / -2 to keep fewer colours. Black (and,
+ * fading out, dark greys up to about 30% brightness) turns red: the "black" layer's
+ * alpha is 1.2 x opacity - 4 x brightness (so empty, transparent pixels stay empty); lower the 1.2 to tint fewer darks.
  */
-function Glitch({ src, width, height, intro }: { src: string | null; width: number; height: number; intro?: boolean }) {
-  const layer = (shift: number, anim: string) => (
+function ensureRedKeepFilter() {
+  if (typeof document === "undefined") return;
+  // Replaced when its definition changes (after an update without a full page reload).
+  const old = document.getElementById(RED_KEEP_ID);
+  if (old?.getAttribute("data-version") === RED_KEEP_VERSION) return;
+  old?.closest("svg")?.remove();
+  const div = document.createElement("div");
+  div.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true">
+    <filter id="${RED_KEEP_ID}" data-version="${RED_KEEP_VERSION}" color-interpolation-filters="sRGB">
+      <feColorMatrix in="SourceGraphic" type="saturate" values="0" result="gray" />
+      <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0.55  0 0 0 0 0.1  0 0 0 0 0.1  -0.85 -2.86 -0.29 1.2 0" result="black" />
+      <feComposite in="black" in2="gray" operator="over" result="base" />
+      <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  3 -5 -2 0 -0.2" result="red" />
+      <feComposite in="red" in2="base" operator="over" />
+    </filter>
+  </svg>`;
+  document.body.appendChild(div.firstElementChild!);
+}
+
+/** The negated look of a card picture. */
+const NEGATED_FILTER = `url(#${RED_KEEP_ID})`;
+
+/* ---------- negation: glitched red cross ---------- */
+
+/**
+ * A red X over the (black-and-white) card that glitches: slices of it jump sideways, with
+ * red/cyan colour-split ghosts, and now and then the whole cross jolts. `intro`: appears
+ * after a short delay (the pop-up shows the change).
+ */
+function Glitch({ width, height, intro }: { width: number; height: number; intro?: boolean }) {
+  // The cross shows while the card is hovered (always in the pop-up, which can't be hovered).
+  // A square X (45°) in the middle of the card.
+  const side = Math.round(Math.min(width, height) * 0.78);
+  const x0 = (width - side) / 2;
+  const y0 = (height - side) / 2;
+  const stroke = Math.max(3, Math.round(width * 0.12));
+  const d = Math.max(3, Math.round(width * 0.1));
+  const cross = (color: string, extra?: object) => (
     <Box
-      sx={{
-        position: "absolute",
-        inset: 0,
-        backgroundColor: src ? undefined : "#7a1010",
-        backgroundImage: src ? `url("${src}")` : undefined,
-        backgroundSize: "cover",
-        filter: "grayscale(1) sepia(1) saturate(6) hue-rotate(-50deg) brightness(.9)",
-        mixBlendMode: "screen",
-        opacity: 0.75,
-        transform: `translateX(${shift}px)`,
-        animation: anim,
-      }}
-    />
+      component="svg"
+      viewBox={`0 0 ${width} ${height}`}
+      sx={{ position: "absolute", inset: 0, width, height, overflow: "visible", ...extra }}
+    >
+      <g stroke={color} strokeWidth={stroke} strokeLinecap="square">
+        <line x1={x0} y1={y0} x2={x0 + side} y2={y0 + side} />
+        <line x1={x0 + side} y1={y0} x2={x0} y2={y0 + side} />
+      </g>
+    </Box>
   );
-  const d = Math.max(2, Math.round(width * 0.05));
   return (
     <Box
       sx={{
@@ -188,31 +227,62 @@ function Glitch({ src, width, height, intro }: { src: string | null; width: numb
         borderRadius: "4px",
         zIndex: 1,
         opacity: intro ? 0 : 1,
-        animation: intro ? "glitchIn .3s ease-out .45s forwards" : undefined,
+        animation: intro ? "glitchIn .3s steps(3, end) .45s forwards" : undefined,
         "@keyframes glitchIn": { to: { opacity: 1 } },
-        "@keyframes glitchA": {
-          "0%, 100%": { clipPath: "inset(0 0 100% 0)" },
-          "8%": { clipPath: "inset(12% 0 70% 0)", transform: `translateX(${-d}px)` },
-          "16%": { clipPath: "inset(55% 0 30% 0)", transform: `translateX(${d}px)` },
-          "24%": { clipPath: "inset(0 0 100% 0)" },
-          "52%": { clipPath: "inset(78% 0 8% 0)", transform: `translateX(${-d * 1.5}px)` },
-          "58%": { clipPath: "inset(35% 0 52% 0)", transform: `translateX(${d}px)` },
-          "64%": { clipPath: "inset(0 0 100% 0)" },
+        "@keyframes crossJolt": {
+          "0%, 100%": { transform: "translate(0, 0)", opacity: 1 },
+          "12%": { transform: `translate(${d}px, 0)`, opacity: 0.6 },
+          "14%": { transform: "translate(0, 0)", opacity: 1 },
+          "31%": { transform: `translate(${-d}px, 1px) skewX(10deg)` },
+          "33%": { transform: "translate(0, 0)" },
+          "47%": { transform: "translate(0, 0)", opacity: 1 },
+          "48%": { transform: `translate(${d * 0.6}px, -1px)`, opacity: 0.3 },
+          "50%": { transform: "translate(0, 0)", opacity: 1 },
+          "62%": { transform: `translate(${d}px, 0)` },
+          "64%": { transform: `translate(${-d}px, 1px)` },
+          "66%": { transform: "translate(0, 0)" },
+          "79%": { transform: "translate(0, 0) scaleX(1)" },
+          "80%": { transform: `translate(${d * 1.2}px, 0) scaleX(1.15)` },
+          "82%": { transform: "translate(0, 0) scaleX(1)" },
+          "89%": { transform: `translate(${-d * 1.5}px, 0) skewX(-12deg)` },
+          "91%": { transform: "translate(0, 0)" },
         },
-        "@keyframes glitchB": {
-          "0%, 100%": { clipPath: "inset(100% 0 0 0)" },
-          "30%": { clipPath: "inset(40% 0 44% 0)", transform: `translateX(${d}px)` },
-          "36%": { clipPath: "inset(5% 0 82% 0)", transform: `translateX(${-d}px)` },
-          "42%": { clipPath: "inset(100% 0 0 0)" },
-          "80%": { clipPath: "inset(62% 0 20% 0)", transform: `translateX(${d * 1.5}px)` },
-          "86%": { clipPath: "inset(100% 0 0 0)" },
+        "@keyframes crossSliceA": {
+          "0%, 100%": { clipPath: "inset(0 0 100% 0)", transform: "translateX(0)" },
+          "10%": { clipPath: "inset(18% 0 66% 0)", transform: `translateX(${-d}px)` },
+          "16%": { clipPath: "inset(52% 0 34% 0)", transform: `translateX(${d}px)` },
+          "22%": { clipPath: "inset(0 0 100% 0)" },
+          "60%": { clipPath: "inset(70% 0 14% 0)", transform: `translateX(${d * 1.5}px)` },
+          "66%": { clipPath: "inset(30% 0 58% 0)", transform: `translateX(${-d}px)` },
+          "72%": { clipPath: "inset(0 0 100% 0)" },
+        },
+        "@keyframes crossTear": {
+          "0%, 100%": { clipPath: "none", transform: "translateX(0)" },
+          "20%": { clipPath: "polygon(0 0, 100% 0, 100% 38%, 0 38%, 0 46%, 100% 46%, 100% 100%, 0 100%)" },
+          "24%": { clipPath: "none" },
+          "55%": { clipPath: "polygon(0 0, 100% 0, 100% 64%, 0 64%, 0 70%, 100% 70%, 100% 100%, 0 100%)", transform: `translateX(${d * 0.5}px)` },
+          "59%": { clipPath: "none", transform: "translateX(0)" },
+          "86%": { clipPath: "polygon(0 0, 100% 0, 100% 15%, 0 15%, 0 24%, 100% 24%, 100% 100%, 0 100%)" },
+          "90%": { clipPath: "none" },
+        },
+        "@keyframes crossSliceB": {
+          "0%, 100%": { clipPath: "inset(100% 0 0 0)", transform: "translateX(0)" },
+          "34%": { clipPath: "inset(40% 0 46% 0)", transform: `translateX(${d}px)` },
+          "40%": { clipPath: "inset(8% 0 80% 0)", transform: `translateX(${-d * 1.5}px)` },
+          "46%": { clipPath: "inset(100% 0 0 0)" },
+          "84%": { clipPath: "inset(62% 0 24% 0)", transform: `translateX(${-d}px)` },
+          "90%": { clipPath: "inset(100% 0 0 0)" },
         },
       }}
     >
-      {/* A faint red wash over the whole card, plus the jumping slices. */}
-      <Box sx={{ position: "absolute", inset: 0, bgcolor: "rgba(229,57,53,.18)", mixBlendMode: "screen" }} />
-      {layer(-d, "glitchA 1.6s steps(1, end) infinite")}
-      {layer(d, "glitchB 2.1s steps(1, end) infinite")}
+      {/* Half see-through, so the card shows through the cross. */}
+      <Box sx={{ position: "absolute", inset: 0, opacity: 0.5, animation: "crossJolt 1.3s steps(1, end) infinite" }}>
+        {/* Colour-split ghosts, offset, showing in the jumping slices. */}
+        {cross("#00e5ff", { opacity: 0.85, mixBlendMode: "screen", animation: "crossSliceA 0.9s steps(1, end) infinite", left: -d / 2 })}
+        {cross("#ff1744", { opacity: 0.9, mixBlendMode: "screen", animation: "crossSliceB 1.1s steps(1, end) infinite", left: d / 2 })}
+        {/* The cross itself, torn by a few sliced bands too. */}
+        {cross("#e53935", { filter: "drop-shadow(0 0 3px rgba(255,23,68,.8))", animation: "crossTear 1.6s steps(1, end) infinite" })}
+      </Box>
     </Box>
   );
 }
@@ -248,6 +318,8 @@ function CardImageInner({
   const ref = useMoveAnimation(trackId);
   const height = cardHeight(width);
   const showBack = faceDown || !code;
+  // The negated look's filter must be on the page before the card is drawn with it.
+  if (negated) ensureRedKeepFilter();
   const name = code ? res?.cards.name(code) : "";
   const ring =
     highlight === "action"
@@ -278,6 +350,9 @@ function CardImageInner({
         flex: "0 0 auto",
         opacity: dim ? 0.45 : 1,
         transition: "opacity .15s ease",
+        // A negated card's glitched cross only shows on hover.
+        "& .negate-x": { opacity: 0, transition: "opacity .12s ease" },
+        "&:hover .negate-x": { opacity: 1 },
       }}
     >
       <Box
@@ -292,11 +367,12 @@ function CardImageInner({
           boxShadow: selected ? "0 0 0 3px #f5c518, 0 0 12px 3px rgba(245,197,24,.8)" : ring,
           overflow: "hidden",
           bgcolor: "#111111",
-          filter: negated && !negateIntro ? "grayscale(1) brightness(.85)" : "none",
+          // Negated: black and white except the reds (and the glitched red cross on hover, see Glitch).
+          filter: negated && !negateIntro ? NEGATED_FILTER : "none",
           transition: "transform .25s ease, filter .3s ease",
           // Pop-up: in colour first, then it turns grey as the glitch starts.
           ...(negated && negateIntro
-            ? { animation: "negateIn .45s ease-in .3s forwards", "@keyframes negateIn": { to: { filter: "grayscale(1) brightness(.85)" } } }
+            ? { animation: "negateIn .45s steps(1, end) .3s forwards", "@keyframes negateIn": { to: { filter: NEGATED_FILTER } } }
             : {}),
         }}
       >
@@ -346,7 +422,21 @@ function CardImageInner({
             pointerEvents: "none",
           }}
         >
-          <Glitch src={config && broken !== code ? cardImage(config, code) : null} width={width} height={height} intro={negateIntro} />
+          {/* A red border just inside the card's edge. The target / equip / action highlights
+              are drawn outside the edge, so both show at once. Not under the card's black-and-
+              white filter, so it stays red. */}
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: "4px",
+              boxShadow: "inset 0 0 0 1px #e53935, inset 0 0 5px rgba(229,57,53,.5)",
+              zIndex: 2,
+            }}
+          />
+          <Box className={negateIntro ? undefined : "negate-x"} sx={{ position: "absolute", inset: 0 }}>
+            <Glitch width={width} height={height} intro={negateIntro} />
+          </Box>
         </Box>
       )}
       {chainLinks && chainLinks.length > 0 && (

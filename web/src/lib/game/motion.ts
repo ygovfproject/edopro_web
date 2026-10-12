@@ -52,6 +52,8 @@ export const LIFT = { rise: 0.62, scale: 1.2 };
 export const MATERIAL_HOLD = 950;
 
 export type ExtraSummon = "fusion" | "synchro" | "xyz" | "link";
+/** Summons with their own step-5 animation: the Extra Deck ones and Ritual Summons. */
+export type SummonKind = ExtraSummon | "ritual";
 
 export interface SummonTimeline {
   /** The card shows at the fall point. */
@@ -66,7 +68,7 @@ export interface SummonTimeline {
 }
 
 /** Step 5 of each Extra Deck summon, 1-2 s in total. */
-export function summonTimeline(kind: ExtraSummon, count: number): SummonTimeline {
+export function summonTimeline(kind: SummonKind, count: number): SummonTimeline {
   const n = Math.max(1, count);
   let reveal: number;
   let enter: "cut" | "fade" = "cut";
@@ -81,13 +83,20 @@ export function summonTimeline(kind: ExtraSummon, count: number): SummonTimeline
       reveal = 1500;
       break;
     case "xyz": {
-      // Spheres hit the zone one by one; the card shows above it after the last.
-      const gap = Math.min(220, 700 / n);
-      hits = Array.from({ length: n }, (_, i) => 300 + i * gap + 260);
-      reveal = hits[n - 1] + 150;
+      // A vortex appears above the zone; the material spheres fall from above, circling the
+      // line down to its centre, one by one (hits = when each reaches it); an explosion after the last, and the
+      // card appears out of it in light, then drops.
+      const gap = Math.min(300, 900 / n);
+      hits = Array.from({ length: n }, (_, i) => XYZ_VORTEX_IN + i * gap + XYZ_FLY_MS);
+      reveal = hits[n - 1] + 180;
       enter = "fade";
       break;
     }
+    case "ritual":
+      // A ring of blue flames appears; the card appears inside it in blue light, then drops.
+      reveal = RITUAL_RING_IN + 150;
+      enter = "fade";
+      break;
     case "link": {
       // After the materials vanish (LINK_LEAD) the Link frame appears with every arrow dark,
       // the monster's arrows light up one by one, and the card fades in inside the frame.
@@ -104,6 +113,20 @@ export function summonTimeline(kind: ExtraSummon, count: number): SummonTimeline
   const drop = reveal + settle + (kind === "link" ? Math.max(250, PAUSE_MS) : PAUSE_MS) * k;
   return { reveal, enter, drop, impact: drop + DROP_MS, hits };
 }
+
+/** Xyz Summon: the vortex takes this long to appear... */
+export const XYZ_VORTEX_IN = 380;
+/** ...and each material sphere this long to fall from the top of the field window onto it. */
+export const XYZ_FLY_MS = 950;
+/** Xyz materials leaving the field: each sphere shoots up out of the field window in this long... */
+export const XYZ_UP_MS = 550;
+/** ...and the next message waits this long, so the spheres leave one after another. */
+export const XYZ_UP_STAGGER = 200;
+
+/** Ritual Summon: how long the ring of blue flames takes to appear. */
+export const RITUAL_RING_IN = 380;
+/** Ritual blue (flames, light, the cell's glow on landing). */
+export const RITUAL_BLUE = "#3f9bff";
 
 /** Link Summon pace: every Link timing is multiplied by this (0.9 = 10% faster). */
 export const LINK_SPEED = 0.9;
@@ -124,14 +147,14 @@ export const BIG_IMPACT_LEVEL = 7;
 
 export const NEON_GREEN = "#39ff14";
 export const NEON_BLUE = "#1ec8ff";
-/** Glow colour of each Attribute (EARTH, WATER, FIRE, WIND, LIGHT, DARK, DIVINE). */
+/** Colour of each Attribute: LIGHT white, DARK purple, WIND green, FIRE red, WATER blue, EARTH brown, DIVINE gold. */
 const ATTRIBUTE_COLORS: [number, string][] = [
-  [0x01, "#c8964b"],
-  [0x02, "#3d9bff"],
-  [0x04, "#ff4a2e"],
-  [0x08, "#4fe07a"],
-  [0x10, "#fff07a"],
-  [0x20, "#b44dff"],
+  [0x01, "#c58a3c"],
+  [0x02, "#2f7dff"],
+  [0x04, "#ff3b2f"],
+  [0x08, "#2fe36a"],
+  [0x10, "#ffffff"],
+  [0x20, "#a43dff"],
   [0x40, "#ffcf3d"],
 ];
 export function attributeColor(attribute: number): string {

@@ -37,7 +37,6 @@ import { actionsFor, disabledZoneKeys, selectableZones, zoneKey, type CardAction
 import { OcgMessageType } from "@/lib/protocol/gamemsg";
 import { respond } from "@/lib/protocol/responses";
 import { MASTER_RULES } from "@/lib/protocol/constants";
-import { attributeColor, summonTimeline } from "@/lib/game/motion";
 import { fieldLayout, linkedZones } from "@/lib/game/layout";
 
 /** Padding kept inside the field window at every window size (px). */
@@ -263,21 +262,6 @@ export default function DuelView({ client }: { client: DuelClient }) {
     }
     return { linked: linkedSet, links: out };
   })();
-
-  // Xyz Summon in progress: the void behind every cell, until the card lands.
-  const xyzFx = duel.fx.find((f) => f.kind === "xyz");
-  const xyzTl = xyzFx ? summonTimeline("xyz", Math.max(1, xyzFx.materials?.length ?? 0)) : null;
-  const boardVoid =
-    xyzFx && xyzTl
-      ? {
-          id: xyzFx.id,
-          cardId: xyzFx.cardId,
-          color: attributeColor(res?.cards.get(xyzFx.code)?.attribute ?? 0),
-          end: xyzTl.impact,
-          // The cell turns yellow when the last sphere hits.
-          yellowAt: xyzTl.hits[xyzTl.hits.length - 1],
-        }
-      : null;
 
   // Zones that glow for a moment (activation, chain resolving, Special Summon).
   const glowZones = new Map<string, ZoneGlow>();
@@ -517,7 +501,6 @@ export default function DuelView({ client }: { client: DuelClient }) {
             pointedZones={pointedZones}
             glowZones={glowZones}
             picks={duel.materialPicks}
-            boardVoid={boardVoid}
             disabledZones={disabled}
             onCardClick={onCardClick}
             onZoneClick={onZoneClick}

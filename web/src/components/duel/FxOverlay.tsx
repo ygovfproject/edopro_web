@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { CardImage, cardRect, forgetVanish, vanishRect } from "../CardImage";
 import { useApp } from "../AppContext";
 import type { Fx, FxCard } from "@/lib/game/duel";
@@ -13,13 +13,19 @@ import {
   LINK_LEAD,
   LINK_SPEED,
   MATERIAL_HOLD,
+  RITUAL_BLUE,
+  RITUAL_RING_IN,
+  XYZ_FLY_MS,
+  XYZ_UP_MS,
+  XYZ_VORTEX_IN,
   NEON_GREEN,
   attributeColor,
   summonTimeline,
-  type ExtraSummon,
+  type SummonKind,
   type SummonTimeline,
 } from "@/lib/game/motion";
 import { LeavingForm, SynchroRing } from "./fx/MaterialForm";
+import { Vortex } from "./fx/Vortex";
 
 /** The ring fills 80% of its image (see public/fx/synchro-ring.svg). */
 const RING_IMAGE_FILL = 0.8;
@@ -56,7 +62,7 @@ function reducedMotion() {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
-const isSummon = (k: Fx["kind"]): k is ExtraSummon => k === "fusion" || k === "synchro" || k === "xyz" || k === "link";
+const isSummon = (k: Fx["kind"]): k is SummonKind => k === "fusion" || k === "synchro" || k === "xyz" || k === "link" || k === "ritual";
 
 function popcount(n: number) {
   let c = 0;
@@ -75,6 +81,7 @@ function lifetime(fx: Fx, tl: SummonTimeline | null): number {
       // Shapes may first form (up to ~1.3 s), then leave one after another (~1 s).
       if (fx.form?.shape === "swirl") return MATERIAL_HOLD + 200;
       if (fx.form?.shape === "glow") return LINK_LEAD + 100;
+      if (fx.form?.shape === "sphere") return (fx.previewed ? 0 : SPHERE_FORM_MS) + XYZ_UP_MS + 60;
       return (fx.previewed ? 0 : 1400) + 1200;
     case "destroy":
     case "battle":
@@ -165,8 +172,19 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
           if (!tuner && !other) tuner = Math.max(1, info?.level ?? 1);
           return <SynchroIn fp={fp} tl={tl} tuner={tuner} other={other} />;
         }
-        case "xyz":
-          return <XyzIn zone={rect} tl={tl} color={attributeColor(info?.attribute ?? 0)} />;
+        case "xyz": {
+          // The vortex is in the summoned monster's Attribute colour; each sphere in its own
+          // material's.
+          const own = attributeColor(info?.attribute ?? 0);
+          const mats = fx.materials ?? [];
+          const colors = mats.map((m) => {
+            const attr = res?.cards.get(m.code)?.attribute ?? 0;
+            return attr ? attributeColor(attr) : own;
+          });
+          return <XyzIn fp={fp} tl={tl} color={own} colors={colors} />;
+        }
+        case "ritual":
+          return <RitualIn fp={fp} tl={tl} />;
         case "link":
           return <LinkIn code={fx.code} fp={fp} tl={tl} marker={fx.linkMarker ?? info?.linkMarker ?? 0} flipped={flipped} />;
       }
@@ -182,17 +200,6 @@ const boxOf = (r: { left: number; top: number; width: number; height: number }):
   width: r.width,
   height: r.height,
 });
-
-/** The field cell a card sits in (cells are square and a bit bigger than the card). */
-function cellOf(card: DOMRect): DOMRect {
-  const cx = card.left + card.width / 2;
-  const cy = card.top + card.height / 2;
-  for (const el of document.querySelectorAll<HTMLElement>("[data-board] [data-cell]")) {
-    const r = el.getBoundingClientRect();
-    if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return r;
-  }
-  return card;
-}
 
 /** The spot above a zone where summoned cards wait before dropping (bigger, see LIFT). */
 function fallPoint(zone: DOMRect, dir: 1 | -1) {
@@ -237,7 +244,13 @@ function Material({ fx, rect, flipped, ghost }: { fx: Fx; rect: DOMRect; flipped
       </div>
     );
   }
-  // Synchro / Xyz: the shapes float up and dissolve. If the card wasn't shown as
+  if (form.shape === "sphere") {
+    // Xyz: the sphere shoots up out of the field window (it comes back down onto the vortex
+    // when the monster is summoned, see XyzIn). If it wasn't shown while picked, the card
+    // turns into it first.
+    return <SphereUp rect={rect} color={form.color} formed={!!fx.previewed} ghost={ghost} />;
+  }
+  // Synchro: the shapes float up and dissolve. If the card wasn't shown as
   // picked (opponent's summon), it turns into them first.
   const w = Math.min(rect.width, rect.height);
   const h = Math.max(rect.width, rect.height);
@@ -246,6 +259,180 @@ function Material({ fx, rect, flipped, ghost }: { fx: Fx; rect: DOMRect; flipped
       {!fx.previewed && <div style={{ position: "absolute", inset: 0, animation: "fxFadeOut 200ms ease-in forwards" }}>{ghost}</div>}
       {/* Each shape leaves on its own, the top one first, accelerating: they string out. */}
       <LeavingForm form={form} width={w} height={h} formed={!!fx.previewed} />
+    </div>
+  );
+}
+
+/** How long a material card takes to turn into its Xyz sphere when it wasn't shown picked. */
+const SPHERE_FORM_MS = 220;
+
+/** How long a flying sphere's trail is, in ms of its recent path. */
+const TRAIL_MS = 220;
+
+/**
+ * A glowing ball in `color` with a smooth trail. An invisible marker is animated (see
+ * animateTrail; `place` positions it); every frame a canvas over the page reads where it is
+ * and draws the ball there, with its recent path behind it as a tapering, fading ribbon
+ * (softly glowing), added onto what is below.
+ */
+function TrailBall({ color, size, place, boxRef }: { color: string; size: number; place: CSSProperties; boxRef: Ref<HTMLDivElement> }) {
+  const ball = useRef<HTMLDivElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = canvas.current;
+    const ctx = cv?.getContext("2d");
+    if (!cv || !ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    ctx.scale(dpr, dpr);
+    const h = color.replace("#", "");
+    const n = parseInt(h.length === 3 ? h.replace(/(.)/g, "$1$1") : h.slice(0, 6), 16);
+    const rgb = `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+    const path: { x: number; y: number; r: number; t: number; a: number }[] = [];
+    let raf = 0;
+    const frame = (now: number) => {
+      const el = ball.current;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        const a = Number(getComputedStyle(el.parentElement!).opacity) || 0;
+        path.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, r: r.width, t: now, a });
+      }
+      while (path.length && now - path[0].t > TRAIL_MS) path.shift();
+      ctx.clearRect(0, 0, W, H);
+      ctx.globalCompositeOperation = "lighter";
+      const m = path.length;
+      if (m > 1) {
+        // Each point's sideways direction (normal to the path), for a ribbon without joints.
+        const nx: number[] = [];
+        const ny: number[] = [];
+        for (let i = 0; i < m; i++) {
+          const p = path[Math.max(0, i - 1)];
+          const q = path[Math.min(m - 1, i + 1)];
+          const dx = q.x - p.x;
+          const dy = q.y - p.y;
+          const len = Math.hypot(dx, dy) || 1;
+          nx.push(-dy / len);
+          ny.push(dx / len);
+        }
+        // Outer glow, body, white-hot core: tapering from the ball's width to nothing, fading.
+        for (const [wide, strength, white, blur] of [[1.6, 0.3, false, size * 0.5], [0.8, 0.5, false, 0], [0.3, 0.45, true, 0]] as const) {
+          ctx.filter = blur ? `blur(${blur}px)` : "none";
+          for (let i = 1; i < m; i++) {
+            const p = path[i - 1];
+            const q = path[i];
+            const fp = Math.max(0, 1 - (now - p.t) / TRAIL_MS);
+            const fq = Math.max(0, 1 - (now - q.t) / TRAIL_MS);
+            const alpha = strength * fq * fq * Math.min(p.a, q.a);
+            if (alpha <= 0.01) continue;
+            const wp = (size * wide * fp) / 2;
+            const wq = (size * wide * fq) / 2;
+            ctx.fillStyle = white ? `rgba(255,255,255,${alpha})` : `rgba(${rgb},${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(p.x + nx[i - 1] * wp, p.y + ny[i - 1] * wp);
+            ctx.lineTo(q.x + nx[i] * wq, q.y + ny[i] * wq);
+            ctx.lineTo(q.x - nx[i] * wq, q.y - ny[i] * wq);
+            ctx.lineTo(p.x - nx[i - 1] * wp, p.y - ny[i - 1] * wp);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+        ctx.filter = "none";
+      }
+      // The ball itself, drawn here too so it is always exactly at the head of its trail.
+      const head = path[path.length - 1];
+      if (head && head.a > 0.01) {
+        const R = head.r / 2;
+        ctx.globalAlpha = head.a;
+        const glow = ctx.createRadialGradient(head.x, head.y, R * 0.6, head.x, head.y, R * 2.6);
+        glow.addColorStop(0, `rgba(${rgb},.7)`);
+        glow.addColorStop(0.4, `rgba(${rgb},.25)`);
+        glow.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, R * 2.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = "source-over";
+        const body = ctx.createRadialGradient(head.x - R * 0.24, head.y - R * 0.32, 0, head.x, head.y, R);
+        body.addColorStop(0, "#fff");
+        body.addColorStop(0.38, color);
+        body.addColorStop(0.7, color);
+        body.addColorStop(1, `rgba(${rgb},.85)`);
+        ctx.fillStyle = body;
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, R, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [color, size]);
+  return (
+    <div ref={boxRef} style={{ position: "absolute", inset: 0 }}>
+      <canvas ref={canvas} style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", pointerEvents: "none" }} />
+      <div data-trail style={{ ...place, width: size, height: size }}>
+        <div
+          ref={ball}
+          // Only marks where the ball is; the canvas draws it (with its trail).
+          style={{ width: "100%", height: "100%", visibility: "hidden" }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Runs `frames` on a TrailBall's ball (the trail follows on its own). */
+function animateTrail(box: HTMLElement | null, frames: Keyframe[], duration: number): Animation[] {
+  const el = box?.querySelector<HTMLElement>("[data-trail]");
+  return el ? [el.animate(frames, { duration, fill: "both", easing: "linear" })] : [];
+}
+
+/** Fades a sphere out as its centre `y` passes the top edge `top` of the field window. */
+const edgeFade = (y: number, top: number, d: number) => Math.max(0, Math.min(1, (y - top) / d + 0.5));
+
+/** An Xyz material's sphere shooting up from its cell, out of the top of the field window. */
+function SphereUp({ rect, color, formed, ghost }: { rect: DOMRect; color: string; formed: boolean; ghost: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Same size as the sphere shown while picked (MaterialForm).
+  const d = Math.min(Math.min(rect.width, rect.height) * 0.45, 26);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const top = document.querySelector("[data-field-window]")?.getBoundingClientRect().top ?? 0;
+    const cy = rect.top + rect.height / 2;
+    const up = cy - top + d * 2;
+    const form = formed ? 0 : SPHERE_FORM_MS;
+    const total = form + XYZ_UP_MS;
+    const o = (t: number) => t / total;
+    const at = (dy: number, scale: number, opacity = 1, offset?: number): Keyframe => ({
+      transform: `translate(-50%, -50%) translateY(${dy}px) scale(${scale})`,
+      opacity,
+      ...(offset !== undefined ? { offset } : {}),
+    });
+    const frames: Keyframe[] = formed ? [at(0, 1, 1, 0)] : [at(0, 0.3, 0, 0), at(0, 1.1, 1, o(form * 0.7)), at(0, 1, 1, o(form))];
+    // A little dip, then up, speeding away.
+    frames.push(at(4, 1, 1, o(form + XYZ_UP_MS * 0.12)));
+    for (let j = 1; j <= 12; j++) {
+      const u = j / 12;
+      const dy = -up * u * u;
+      frames.push(at(dy, 1 - 0.15 * u, edgeFade(cy + dy, top, d), o(form + XYZ_UP_MS * (0.12 + 0.88 * u))));
+    }
+    const anims = animateTrail(el, frames, total);
+    return () => anims.forEach((a) => a.cancel());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div style={boxOf(rect)}>
+      {!formed && <div style={{ position: "absolute", inset: 0, animation: `fxFadeOut ${SPHERE_FORM_MS}ms ease-in forwards` }}>{ghost}</div>}
+      <TrailBall
+        color={color}
+        size={d}
+        boxRef={ref}
+        place={{ position: "absolute", left: "50%", top: "50%", opacity: formed ? 1 : 0, transform: "translate(-50%, -50%)" }}
+      />
     </div>
   );
 }
@@ -341,75 +528,270 @@ function SynchroIn({ fp, tl, tuner, other }: { fp: FallPoint; tl: SummonTimeline
   );
 }
 
+/** The Xyz galaxy's width : height. */
+const GALAXY_ASPECT = 1.7;
+
 /**
- * Xyz: the zone becomes a light tunnel, spheres in the monster's Attribute colour drop
- * into it one by one, the cell glows white after the last, the card appears above and
- * drops, and the glow dissolves on impact.
+ * Xyz: a galaxy vortex in the monster's Attribute colour appears above the zone. The
+ * materials' spheres (which shot up out of the field when they were used) fall back from
+ * the top of the field window one by one, circling an imaginary line that runs straight up
+ * from the vortex's centre, closer and closer to it as they fall (a V), and drop into the
+ * centre. When the last one gets there it explodes, the card appears out of the explosion
+ * in the Attribute's light, and then drops.
  */
-function XyzIn({ zone, tl, color }: { zone: DOMRect; tl: SummonTimeline; color: string }) {
-  const end = tl.impact;
-  const d = Math.max(10, Math.min(zone.width * 0.32, 22));
+function XyzIn({ fp, tl, color, colors }: { fp: FallPoint; tl: SummonTimeline; color: string; colors: string[] }) {
+  // The galaxy: GALAXY_ASPECT times as wide as it is tall.
+  const D = Math.max(fp.width, fp.height) * 2.1;
+  const Rv = D / 2;
+  const Rw = (D * GALAXY_ASPECT) / 2;
+  const last = tl.hits[tl.hits.length - 1];
+  const dot = Math.max(10, Math.min(fp.width * 0.26, 20));
+  const sphereRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // From the explosion on, the collapsing galaxy only adds light (dark parts must not dim it).
+  const [blast, setBlast] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setBlast(true), last - 20);
+    return () => clearTimeout(t);
+  }, [last]);
+  useEffect(() => {
+    // The line: from the vortex's centre straight up to just past the top of the field window.
+    const top = document.querySelector("[data-field-window]")?.getBoundingClientRect().top ?? 0;
+    const sky = Math.min(top - dot * 2, fp.cy - Rv * 2);
+    // Widest circle at the top, closing in to nothing at the centre; this many turns on the way.
+    const R0 = Rw * 0.8;
+    const TURNS = 1.5;
+    const anims: Animation[] = [];
+    tl.hits.forEach((hit, i) => {
+      const el = sphereRefs.current[i];
+      if (!el) return;
+      const launch = hit - XYZ_FLY_MS;
+      const k = (t: number) => Math.min(1, t / hit);
+      const pos = (x: number, y: number, scale = 1, opacity = 1, offset?: number): Keyframe => ({
+        transform: `translate(${x - dot / 2}px, ${y - dot / 2}px) scale(${scale})`,
+        opacity,
+        ...(offset !== undefined ? { offset } : {}),
+      });
+      const frames: Keyframe[] = [pos(fp.cx, sky, 1, 0, 0), pos(fp.cx, sky, 1, 0, k(launch))];
+      // Falling, speeding up a little; every sphere takes the same path.
+      const steps = 60;
+      for (let j = 1; j <= steps; j++) {
+        const u = j / steps;
+        const h = 1 - Math.pow(u, 1.35); // height left, 1 at the top, 0 at the centre
+        const y = fp.cy + (sky - fp.cy) * h;
+        const phase = TURNS * 2 * Math.PI * u;
+        const x = fp.cx + R0 * h * Math.sin(phase);
+        // Nearer when on the front of the circle: a touch bigger.
+        const scale = (1 + 0.15 * Math.cos(phase)) * (0.55 + 0.45 * Math.sqrt(h));
+        frames.push(pos(x, y, scale, j === steps ? 0 : edgeFade(y, top, dot), k(launch + XYZ_FLY_MS * u)));
+      }
+      anims.push(...animateTrail(el, frames, hit));
+    });
+    return () => anims.forEach((a) => a.cancel());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const center = { left: fp.cx - 1, top: fp.cy - 1, width: 2, height: 2 };
   return (
     <>
-      {/* The void behind the cells is drawn by the board (BoardVoid). */}
-      {tl.hits.map((hit, i) => (
-        <div key={i} style={boxOf(zone)}>
-          <div
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              width: d,
-              height: d,
-              marginLeft: -d / 2,
-              marginTop: -d / 2,
-              borderRadius: "50%",
-              background: `radial-gradient(circle at 38% 35%, #fff, ${color} 50%, ${color}22 80%)`,
-              boxShadow: `0 0 12px 4px ${color}`,
-              opacity: 0,
-              ["--from" as string]: `${-(zone.top + zone.height / 2 + 40)}px`,
-              // Fast, accelerating fall...
-              animation: `fxSphereDrop 150ms cubic-bezier(.7,0,1,.5) ${hit - 150}ms forwards`,
-            }}
-          />
-          {/* ...and an explosion where it hits. */}
-          <Burst size={Math.max(zone.width, zone.height) * 1.9} color={`${color}dd`} at={hit - 5} />
-          <div
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              width: Math.max(zone.width, zone.height) * 1.4,
-              height: Math.max(zone.width, zone.height) * 1.4,
-              marginLeft: -Math.max(zone.width, zone.height) * 0.7,
-              marginTop: -Math.max(zone.width, zone.height) * 0.7,
-              borderRadius: "50%",
-              border: `3px solid ${color}`,
-              boxShadow: `0 0 12px 3px ${color}`,
-              opacity: 0,
-              animation: `fxBlast 380ms ease-out ${hit}ms forwards`,
-            }}
-          />
-        </div>
-      ))}
-      {tl.hits.map((hit, i) => (
-        <Sparks key={`k${i}`} rect={zone} color={color} at={hit} count={16} />
-      ))}
-      {/* After the last sphere the whole cell glows yellow (its background turns yellow too, see
-          BoardVoid), dissolving into sparks on impact. Only the glow is drawn here, so the
-          card stays visible as it lands. */}
+      {/* The vortex: grows in, turns, and collapses into the explosion. */}
       <div
         style={{
-          ...boxOf(cellOf(zone)),
-          borderRadius: 4,
-          boxShadow: "0 0 22px 8px rgba(255,213,79,.9), inset 0 0 16px 5px rgba(255,240,170,.9)",
+          position: "absolute",
+          left: fp.cx - Rw,
+          top: fp.cy - Rv,
+          width: Rw * 2,
+          height: D,
+          mixBlendMode: blast ? "screen" : undefined,
           opacity: 0,
-          animation: `fxIn 220ms ease-out ${tl.hits[tl.hits.length - 1]}ms forwards, fxDissolve 400ms ease-out ${end}ms forwards`,
+          animation: `fxXyzVortexIn ${XYZ_VORTEX_IN}ms ease-out forwards, fxXyzVortexOut 260ms ease-in ${last}ms forwards`,
+        }}
+      >
+        <Vortex size={D} aspect={GALAXY_ASPECT} color={color} charges={tl.hits} />
+      </div>
+      {/* The material spheres (each in its Attribute's colour), with their trails. */}
+      {tl.hits.map((hit, i) => {
+        const c = colors[i % Math.max(1, colors.length)] ?? color;
+        return (
+          <TrailBall
+            key={i}
+            color={c}
+            size={dot}
+            boxRef={(el) => {
+              sphereRefs.current[i] = el;
+            }}
+            place={{ position: "absolute", left: 0, top: 0, opacity: 0 }}
+          />
+        );
+      })}
+      {/* Each sphere flashes as it reaches the core... */}
+      {tl.hits.slice(0, -1).map((hit, i) => (
+        <div key={`f${i}`} style={boxOf(center)}>
+          <Burst size={Rv * 0.9} color={`${colors[i % Math.max(1, colors.length)] ?? color}cc`} at={hit - 10} />
+        </div>
+      ))}
+      {/* ...and the last one sets off the explosion. */}
+      <div style={boxOf(center)}>
+        <Burst size={D * 1.7} color={`${color}ee`} at={last - 10} />
+        <div
+          style={{
+            position: "absolute",
+            left: -D * 0.75,
+            top: -D * 0.75,
+            width: D * 1.5,
+            height: D * 1.5,
+            borderRadius: "50%",
+            border: `3px solid ${color}`,
+            boxShadow: `0 0 16px 4px ${color}`,
+            opacity: 0,
+            animation: `fxBlast 420ms ease-out ${last}ms forwards`,
+          }}
+        />
+      </div>
+      <Sparks rect={{ left: fp.cx - Rv / 2, top: fp.cy - Rv / 2, width: Rv, height: Rv }} color={color} at={last} count={22} />
+      {/* The card appears out of the explosion in the Attribute's light (the card itself is
+          drawn by the board, underneath). */}
+      <div
+        style={{
+          ...boxOf(fp),
+          borderRadius: 6,
+          background: `radial-gradient(ellipse at center, #ffffffcc 0%, ${color}aa 45%, ${color}00 75%)`,
+          boxShadow: `0 0 18px 6px ${color}, 0 0 40px 12px ${color}66`,
+          mixBlendMode: "screen",
+          opacity: 0,
+          animation: `fxRitualLight ${tl.drop - tl.reveal + 120}ms ease-out ${tl.reveal - 120}ms forwards, fxOut 120ms ease-in ${tl.drop}ms forwards`,
         }}
       />
-      <Sparks rect={zone} color="#ffe082" at={end} count={14} />
     </>
   );
+}
+
+/**
+ * Ritual: a ring of blue fire appears above the zone, the card appears inside it in a
+ * burst of blue light, the fire dies down and the card drops (the cell then glows blue).
+ */
+function RitualIn({ fp, tl }: { fp: FallPoint; tl: SummonTimeline }) {
+  // Ring a little bigger than the card; the canvas leaves room for the flames above it.
+  const R = Math.max(fp.width, fp.height) * 0.68;
+  const S = R * 3.2;
+  const out = tl.drop - 160;
+  return (
+    <div style={{ position: "absolute", left: fp.cx - S / 2, top: fp.cy - S / 2, width: S, height: S }}>
+      <RitualFire size={S} radius={R} stopAt={out} endAt={tl.drop + 200} />
+      {/* Blue light where the card appears: it flares as the card shows and settles into a glow. */}
+      <div
+        style={{
+          position: "absolute",
+          left: S / 2 - fp.width / 2,
+          top: S / 2 - fp.height / 2,
+          width: fp.width,
+          height: fp.height,
+          borderRadius: 6,
+          background: `radial-gradient(ellipse at center, #e6f3ffcc 0%, ${RITUAL_BLUE}99 45%, ${RITUAL_BLUE}00 75%)`,
+          boxShadow: `0 0 18px 6px ${RITUAL_BLUE}, 0 0 40px 12px ${RITUAL_BLUE}66`,
+          mixBlendMode: "screen",
+          opacity: 0,
+          animation: `fxRitualLight ${tl.drop - tl.reveal + 120}ms ease-out ${tl.reveal - 120}ms forwards, fxOut 120ms ease-in ${tl.drop}ms forwards`,
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * A ring of blue fire: tongues of flame rise from every point of the circle, flicker and
+ * cool from white to blue as they fade; overlapping flames add up (additive blending), so
+ * the ring burns brightest where they are densest. It grows in, burns, and dies down from
+ * `stopAt` (ms).
+ */
+function RitualFire({ size, radius, stopAt, endAt }: { size: number; radius: number; stopAt: number; endAt: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    ctx.scale(dpr, dpr);
+    const c = size / 2;
+    const unit = radius / 60; // scale everything with the ring
+    type P = { x: number; y: number; vx: number; vy: number; life: number; age: number; r: number; seed: number };
+    const ps: P[] = [];
+    const t0 = performance.now();
+    let last = t0;
+    let raf = 0;
+    const frame = (now: number) => {
+      const t = now - t0;
+      const dt = Math.min(48, now - last);
+      last = now;
+      // The ring grows in over RITUAL_RING_IN, burns, then stops feeding at stopAt.
+      const grow = Math.min(1, t / RITUAL_RING_IN);
+      const ringR = radius * (0.55 + 0.45 * (1 - Math.pow(1 - grow, 3)));
+      if (t < stopAt) {
+        const n = Math.round((dt / 1000) * 1100 * (0.4 + 0.6 * grow));
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const jitter = (Math.random() - 0.5) * 4 * unit;
+          ps.push({
+            x: c + Math.cos(a) * (ringR + jitter),
+            y: c + Math.sin(a) * (ringR + jitter),
+            // Fire rises, with a little push outwards from the ring.
+            vx: Math.cos(a) * 6 * unit + (Math.random() - 0.5) * 8 * unit,
+            vy: -(30 + Math.random() * 40) * unit + Math.sin(a) * 4 * unit,
+            life: 260 + Math.random() * 360,
+            age: 0,
+            r: (2.4 + Math.random() * 3.2) * unit,
+            seed: Math.random() * 1000,
+          });
+        }
+      }
+      // Fade the last frame instead of clearing it: each flame leaves a streak as it rises,
+      // which is what makes it read as fire rather than dots.
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(1, 0.3 * (dt / 16))})`;
+      ctx.fillRect(0, 0, size, size);
+      // A soft glow where the fire burns.
+      const fade = t < stopAt ? grow : Math.max(0, 1 - (t - stopAt) / 220);
+      if (fade > 0) {
+        ctx.globalCompositeOperation = "lighter";
+        ctx.save();
+        ctx.strokeStyle = `rgba(90,170,255,${0.22 * fade})`;
+        ctx.shadowColor = RITUAL_BLUE;
+        ctx.shadowBlur = 18 * unit;
+        ctx.lineWidth = 5 * unit;
+        ctx.beginPath();
+        ctx.arc(c, c, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = ps.length - 1; i >= 0; i--) {
+        const p = ps[i];
+        p.age += dt;
+        const k = p.age / p.life;
+        if (k >= 1) {
+          ps.splice(i, 1);
+          continue;
+        }
+        // Flicker sideways as it rises; flames speed up and narrow towards their tips.
+        p.x += (p.vx + Math.sin((p.age + p.seed) / 70) * 10 * unit) * (dt / 1000);
+        p.y += p.vy * (1 + 1.6 * k) * (dt / 1000);
+        const r = p.r * (1 - k * 0.75);
+        // White-hot at the base, cooling to blue, then to a faint deep blue.
+        const [cr, cg, cb] = k < 0.18 ? [230, 245, 255] : k < 0.5 ? [110, 185, 255] : [40, 110, 255];
+        const alpha = (k < 0.1 ? k / 0.1 : 1 - (k - 0.1) / 0.9) * 0.8;
+        const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+        g.addColorStop(0, `rgba(${cr},${cg},${cb},${alpha})`);
+        g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (t < endAt || ps.length) raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [size, radius, stopAt, endAt]);
+  return <canvas ref={ref} style={{ position: "absolute", inset: 0, width: size, height: size }} />;
 }
 
 /** Link Arrow bits clockwise from the top, with the picture of each (public/fx/link). */
@@ -789,7 +1171,15 @@ const KEYFRAMES = `
 @keyframes fxOut { from { opacity: 1; } to { opacity: 0; } }
 @keyframes fxDissolve { from { opacity: 1; transform: scale(1); filter: blur(0); } to { opacity: 0; transform: scale(1.35); filter: blur(8px); } }
 @keyframes fxSphereDrop { 0% { opacity: 1; transform: translateY(var(--from)); } 92% { opacity: 1; transform: translateY(0) scale(1.3); } 100% { opacity: 0; transform: translateY(0) scale(1.8); } }
+@keyframes fxXyzVortexIn { from { opacity: 0; transform: scale(.3) rotate(90deg); } to { opacity: 1; transform: scale(1) rotate(0deg); } }
+@keyframes fxXyzVortexOut { from { opacity: 1; transform: scale(1); filter: brightness(1); } to { opacity: 0; transform: scale(.15); filter: brightness(2.5); } }
 @keyframes fxGrowIn { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: scale(1); } }
+@keyframes fxRitualLight {
+  0% { opacity: 0; transform: scale(.6); }
+  25% { opacity: 1; transform: scale(1.15); }
+  60% { opacity: .55; transform: scale(1); }
+  100% { opacity: .35; transform: scale(1); }
+}
 @keyframes fxLinkFrameIn { from { opacity: 0; transform: var(--rot) scale(.85); } to { opacity: 1; transform: var(--rot) scale(1); } }
 @keyframes fxLinkArrow {
   0% { opacity: 0; filter: brightness(2.6) drop-shadow(0 0 0 #1ec8ff); }
