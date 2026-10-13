@@ -112,7 +112,17 @@ function useCountdown(client: DuelClient) {
   };
 }
 
-export default function DuelView({ client }: { client: DuelClient }) {
+export default function DuelView({
+  client,
+  onNext,
+  nextAfter,
+}: {
+  client: DuelClient;
+  /** Random watching (see RandomWatch): a "Next room" button instead of "Leave". */
+  onNext?: () => void;
+  /** ...and when the duel is over, the next one is joined after this long (ms). */
+  nextAfter?: number;
+}) {
   useClientState(client);
   const { res, settings, updateSettings, closeClient } = useApp();
   const duel = client.duel;
@@ -585,10 +595,16 @@ export default function DuelView({ client }: { client: DuelClient }) {
                 Surrender
               </Button>
             )}
-            {client.isObserver && (
-              <Button size="small" onClick={closeClient}>
-                Leave
+            {onNext ? (
+              <Button size="small" variant="outlined" onClick={onNext}>
+                Next room
               </Button>
+            ) : (
+              client.isObserver && (
+                <Button size="small" onClick={closeClient}>
+                  Leave
+                </Button>
+              )
             )}
           </Stack>
         </Paper>
@@ -793,6 +809,11 @@ export default function DuelView({ client }: { client: DuelClient }) {
           <Typography variant="body2" color="text.secondary">
             {duel.winner && res!.victory(duel.winner.reason)}
           </Typography>
+          {onNext && nextAfter !== undefined && (
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              Next duel in {Math.round(nextAfter / 1000)} seconds…
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
           {client.status === "rematch" && (
@@ -804,8 +825,8 @@ export default function DuelView({ client }: { client: DuelClient }) {
             </>
           )}
           {client.status !== "rematch" && (
-            <Button variant="contained" onClick={closeClient}>
-              Back to lobby
+            <Button variant="contained" onClick={onNext ?? closeClient}>
+              {onNext ? "Next room" : "Back to lobby"}
             </Button>
           )}
         </DialogActions>
@@ -834,8 +855,8 @@ export default function DuelView({ client }: { client: DuelClient }) {
             <Typography variant="body2">{client.error ?? "The connection to the server was closed."}</Typography>
           </DialogContent>
           <DialogActions>
-            <Button variant="contained" onClick={closeClient}>
-              Back to lobby
+            <Button variant="contained" onClick={onNext ?? closeClient}>
+              {onNext ? "Next room" : "Back to lobby"}
             </Button>
           </DialogActions>
         </FieldDialog>
