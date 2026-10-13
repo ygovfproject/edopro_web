@@ -12,13 +12,24 @@ export type AppearStyle = "fade" | "pop" | "twist";
 export interface LandPlan {
   /** Hidden for this long (ms) before it shows. */
   hold: number;
-  /** "fly": from where it was; "fade": fades in; "cut": appears at once. */
-  enter: "fly" | "fade" | "cut";
+  /** "fly": from where it was; "fade": fades in; "grow": fades in growing from half size; "cut": appears at once. */
+  enter: "fly" | "fade" | "grow" | "cut";
   /** When the card falls from above its zone into it (ms). Without it the card just lands. */
   dropAt?: number;
   /** Which way "above the zone" is on screen: -1 up (your side), 1 down (the opponent's). */
   dir: 1 | -1;
+  /** Wind-up before the drop, by how hard it lands (the impact tier): 0 / none, 1, 2. */
+  windup?: 0 | 1 | 2;
+  /** The card shines in this colour from when it shows until it lands (Xyz: its Attribute; Ritual: blue). */
+  glow?: string;
 }
+
+/** Wind-up before a summoned card drops, by impact tier: how much higher (card heights), how much bigger, how long (ms). */
+export const WINDUP = [
+  { rise: 0, grow: 0, ms: 0 },
+  { rise: 0.22, grow: 0.05, ms: 200 },
+  { rise: 0.45, grow: 0.1, ms: 280 },
+] as const;
 
 export const motion = {
   /** Cards that leave without flying to their new pile (destroyed, used as material). */
@@ -27,10 +38,19 @@ export const motion = {
   appear: new Map<number, { hold: number; style: AppearStyle }>(),
   /** Summoned cards with a custom arrival (lift above the zone, then drop). */
   land: new Map<number, LandPlan>(),
+  /** Xyz Monsters being summoned: when (performance.now() ms) their materials may show under them (once landed). */
+  materialsAt: new Map<number, number>(),
+  /** Cards coming into a hand: the pile they come from ("player-location"), for cards not drawn there (e.g. not the Deck's top card)... */
+  handFrom: new Map<number, string>(),
+  /** ...and when (performance.now() ms) each starts to fly, so several go one after another. */
+  handAt: new Map<number, number>(),
   clear() {
+    this.handFrom.clear();
+    this.handAt.clear();
     this.vanish.clear();
     this.appear.clear();
     this.land.clear();
+    this.materialsAt.clear();
   },
 };
 
@@ -75,8 +95,9 @@ export function summonTimeline(kind: SummonKind, count: number): SummonTimeline 
   let hits: number[] = [];
   switch (kind) {
     case "fusion":
-      // The card swirls in at the fall point, then drops.
-      reveal = 700;
+      // The materials appear on a circle above the zone and spiral into its centre; out of
+      // the light there the card swirls in, then drops.
+      reveal = FUSION_MERGE + FUSION_SWIRL_MS;
       break;
     case "synchro":
       // Rings appear, spheres fall through them, a glowing silhouette, then the card.
@@ -114,6 +135,11 @@ export function summonTimeline(kind: SummonKind, count: number): SummonTimeline 
   return { reveal, enter, drop, impact: drop + DROP_MS, hits };
 }
 
+/** Fusion Summon: the materials have spiralled into one point this long after the start... */
+export const FUSION_MERGE = 1350;
+/** ...and the Fusion Monster then takes this long to swirl in out of the light. */
+export const FUSION_SWIRL_MS = 700;
+
 /** Xyz Summon: the vortex takes this long to appear... */
 export const XYZ_VORTEX_IN = 380;
 /** ...and each material sphere this long to fall from the top of the field window onto it. */
@@ -135,10 +161,22 @@ export const LINK_LEAD = Math.round(520 * LINK_SPEED);
 /** ...and takes this long to appear. */
 export const LINK_FRAME_IN = Math.round(260 * LINK_SPEED);
 
-/** An attacker rushing into its target and back, at the end of the battle step. */
-export const BUMP_MS = 560;
-/** When in the bump it hits (fraction of BUMP_MS). */
-export const BUMP_HIT = 0.42;
+/** Cards added to a hand fly in one after another, this far apart (ms). */
+export const HAND_STEP = 220;
+
+/** A card flying into a pile it isn't drawn on top of, and a Deck being shuffled (ms). */
+export const TO_PILE_MS = 460;
+export const SHUFFLE_MS = 520;
+
+/** An LP change: the number shows, waits, then hits the LP bar this long after it started. */
+export const LP_HIT_MS = 1000;
+
+/** An attacker stepping back, rushing into its target and back, at the end of the battle step. */
+export const BUMP_MS = 860;
+/** The step back (wind-up) before the rush ends here (fraction of BUMP_MS)... */
+export const BUMP_WINDUP = 0.34;
+/** ...and it hits here. */
+export const BUMP_HIT = 0.63;
 
 /** Level / Rank / Link Rating that makes the landing a big one. */
 export const BIG_IMPACT_LEVEL = 7;

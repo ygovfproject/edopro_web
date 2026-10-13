@@ -1,12 +1,13 @@
 "use client";
 
-import { Badge, Box, Tooltip } from "@mui/material";
-import { CardImage, cardHeight } from "../CardImage";
+import { useEffect, useRef, useState } from "react";
+import { Box, Tooltip } from "@mui/material";
+import { CardImage, arrivalTime, cardHeight } from "../CardImage";
 import { useApp } from "../AppContext";
 import { LOC, POS, type DuelCard, type DuelState } from "@/lib/game/duel";
 import { zoneKey, type Zone } from "@/lib/game/actions";
 import { fieldLayout } from "@/lib/game/layout";
-import type { PickForm } from "@/lib/game/motion";
+import { HAND_STEP, attributeColor, motion, type PickForm } from "@/lib/game/motion";
 import { PickLayer } from "./fx/MaterialForm";
 
 export interface ZoneGlow {
@@ -31,6 +32,9 @@ export interface BoardProps {
   /** Zones that can be clicked (SELECT_PLACE). */
   selectableZones: Set<string>;
   selectedZones: Set<string>;
+  /** Cards that can be chosen right on the board (a card prompt), and those picked so far. */
+  selectCards?: Set<number>;
+  pickedCards?: Set<number>;
   /** Zones the hovered Link Monster points to. */
   pointedZones?: Set<string>;
   disabledZones: Set<string>;
@@ -95,7 +99,15 @@ export default function Board(p: BoardProps) {
 
   const highlightOf = (card: DuelCard) =>
     // Cards bound to the hovered one (equips, targets) glow white, over any other highlight.
-    p.linked.has(card.id) ? "linked" : p.actionable.has(card.id) ? "action" : card === attackFrom || card === attackTo ? "target" : null;
+    p.linked.has(card.id)
+      ? "linked"
+      : p.selectCards?.has(card.id)
+        ? "select"
+        : p.actionable.has(card.id)
+          ? "action"
+          : card === attackFrom || card === attackTo
+            ? "target"
+            : null;
 
   const zone = (player: number, location: number, sequence: number, key: string, gridColumn: number, gridRow: number) => {
     const z: Zone = { player, location, sequence };
@@ -166,57 +178,50 @@ export default function Board(p: BoardProps) {
             }}
           />
         )}
+        {card && isMonsterZone && card.overlays.length > 0 && (
+          <XyzMaterials
+            key={card.id}
+            card={card}
+            width={W}
+            height={H}
+            flipped={player !== me}
+            color={attributeColor((card.hasStats ? card.attribute : 0) || (res?.cards.get(card.code)?.attribute ?? 0))}
+            onClick={p.onMaterialsClick ? () => p.onMaterialsClick!(card) : undefined}
+          />
+        )}
+        {/* While picked as a material the card turns into its shapes (PickLayer), or, for
+            Link materials, stays and turns white with a glow (glowPick). */}
         {card && (
           <Tooltip title={negated ? "Effects negated" : ""} placement="top" disableInteractive>
-            <Badge
-              badgeContent={card.overlays.length || 0}
-              color="primary"
-              invisible={!card.overlays.length}
-              // Top-left: the bottom edge holds ATK/DEF, the top-right corner counters.
-              anchorOrigin={{ vertical: "top", horizontal: "left" }}
-              // Clicking the count lists the materials.
-              slotProps={{
-                badge: {
-                  title: "Show materials",
-                  onClick: (e: React.MouseEvent) => {
-                    e.stopPropagation();
-                    p.onMaterialsClick?.(card);
-                  },
-                },
+            <Box
+              sx={{
+                position: "relative",
+                opacity: pick && pick.shape !== "glow" ? 0 : 1,
+                transform: pick && pick.shape !== "glow" ? "scale(.75)" : "none",
+                transition: "opacity .25s ease, transform .25s ease, filter .25s ease",
+                ...(pick?.shape === "glow" ? glowPick(pick.color) : {}),
               }}
-              sx={{ "& .MuiBadge-badge": { zIndex: 4, cursor: p.onMaterialsClick ? "pointer" : "default", pointerEvents: "auto" } }}
             >
-              {/* While picked as a material the card turns into its shapes (PickLayer), or, for
-                  Link materials, stays and turns white with a glow (glowPick). */}
-              <Box
-                sx={{
-                  position: "relative",
-                  opacity: pick && pick.shape !== "glow" ? 0 : 1,
-                  transform: pick && pick.shape !== "glow" ? "scale(.75)" : "none",
-                  transition: "opacity .25s ease, transform .25s ease, filter .25s ease",
-                  ...(pick?.shape === "glow" ? glowPick(pick.color) : {}),
-                }}
-              >
-                <CardImage
-                  // One element per card: a new card in this zone must not inherit the last one's animation.
-                  key={card.id}
-                  code={hiddenFromMe ? 0 : card.code}
-                  width={W}
-                  faceDown={isFaceDown(card)}
-                  sideways={isMonsterZone && isDefense(card)}
-                  flipped={player !== me}
-                  // STATUS_DISABLED or STATUS_FORBIDDEN, as EDOPro shows its "negated" icon.
-                  negated={negated}
-                  highlight={highlightOf(card)}
-                  trackId={card.id}
-                  chainLinks={p.chainLinks.get(card.id)}
-                  onClick={selectable ? undefined : (e) => p.onCardClick(card, e.currentTarget)}
-                  onHover={() => p.onHover(card, hiddenFromMe ? 0 : card.code)}
-                  onLeave={() => p.onHover(null, 0)}
-                />
-                {pick?.shape === "glow" && <Box sx={glowPickVeil} />}
-              </Box>
-            </Badge>
+              <CardImage
+                // One element per card: a new card in this zone must not inherit the last one's animation.
+                key={card.id}
+                code={hiddenFromMe ? 0 : card.code}
+                width={W}
+                faceDown={isFaceDown(card)}
+                sideways={isMonsterZone && isDefense(card)}
+                flipped={player !== me}
+                // STATUS_DISABLED or STATUS_FORBIDDEN, as EDOPro shows its "negated" icon.
+                negated={negated}
+                highlight={highlightOf(card)}
+                selected={p.pickedCards?.has(card.id)}
+                trackId={card.id}
+                chainLinks={p.chainLinks.get(card.id)}
+                onClick={selectable ? undefined : (e) => p.onCardClick(card, e.currentTarget)}
+                onHover={() => p.onHover(card, hiddenFromMe ? 0 : card.code)}
+                onLeave={() => p.onHover(null, 0)}
+              />
+              {pick?.shape === "glow" && <Box sx={glowPickVeil} />}
+            </Box>
           </Tooltip>
         )}
         {card && isMonsterZone && <PickLayer form={pick} width={W} height={H} />}
@@ -241,25 +246,7 @@ export default function Board(p: BoardProps) {
             {card.link ? ` / L${card.link}` : ` / ${card.defense < 0 ? "?" : card.defense}`}
           </Box>
         )}
-        {card && Object.keys(card.counters).length > 0 && (
-          <Box
-            sx={{
-              position: "absolute",
-              top: 2,
-              right: 2,
-              bgcolor: "secondary.main",
-              color: "#000",
-              borderRadius: "10px",
-              px: 0.6,
-              fontSize: 10,
-              fontWeight: 700,
-              pointerEvents: "none",
-              zIndex: 2,
-            }}
-          >
-            {Object.values(card.counters).reduce((a, b) => a + b, 0)}
-          </Box>
-        )}
+        {/* Counters, a changed name, negation and materials are listed in the card details on hover. */}
         {card && isPendulumZone && !isFaceDown(card) && (() => {
           // Pendulum Scale: a diamond in the middle of the zone, blue on the left, red on the right.
           const info = card.code ? res?.cards.get(card.code) : undefined;
@@ -351,6 +338,8 @@ export default function Board(p: BoardProps) {
     return (
       <Box
         data-cell
+        // Cards coming into a hand from here start from this pile (see useMoveAnimation).
+        data-pile={`${player}-${location}`}
         key={`pile-${player}-${location}`}
         onClick={() => p.onPileClick(player, location)}
         sx={{
@@ -493,6 +482,176 @@ export default function Board(p: BoardProps) {
   );
 }
 
+/** An empty hand waits this long for all the cards coming in before laying out their places (ms). */
+const HAND_COLLECT_MS = 150;
+
+/** A card that left the hand keeps its place empty this long at least (ms), e.g. when it goes somewhere not drawn. */
+const HAND_GAP_MIN = 420;
+
+/**
+ * Keeps the hand's layout while cards leave it: a card that left keeps an empty slot of its
+ * size where it was until it has arrived where it went (see arrivalTime), then the hand
+ * closes up.
+ */
+function useHandGaps(cards: DuelCard[]) {
+  const [, force] = useState(0);
+  /** Departed card id -> its index in the row and until when its slot stays. */
+  const gaps = useRef(new Map<number, { index: number; until: number; min: number }>());
+  // A copy: the duel state changes the hand's list in place.
+  const prev = useRef<DuelCard[]>([...cards]);
+  const ids = new Set(cards.map((c) => c.id));
+  // Found while rendering, so the very first frame without the card already has the slot.
+  prev.current.forEach((c, i) => {
+    if (!ids.has(c.id) && !gaps.current.has(c.id)) {
+      // A card leaving with an effect where it stood (e.g. a Fusion material swirling away)
+      // stays hidden at its destination for that long: keep its place at least until then.
+      const hold = motion.appear.get(c.id)?.hold ?? 0;
+      gaps.current.set(c.id, { index: i, until: 0, min: performance.now() + hold });
+    }
+  });
+  for (const id of [...gaps.current.keys()]) if (ids.has(id)) gaps.current.delete(id);
+  prev.current = [...cards];
+  useEffect(() => {
+    // After the cards' own layout effects: their flights have started, so their arrival is known.
+    const now = performance.now();
+    let next = Infinity;
+    for (const [id, g] of gaps.current) {
+      if (g.until === 0) g.until = Math.max(now + HAND_GAP_MIN, g.min, arrivalTime(id) ?? 0);
+      next = Math.min(next, g.until);
+    }
+    if (next === Infinity) return;
+    // When the next card has arrived: drop its slot and close up.
+    const t = setTimeout(() => {
+      const at = performance.now();
+      for (const [id, g] of gaps.current) if (g.until <= at) gaps.current.delete(id);
+      force((n) => n + 1);
+    }, Math.max(0, next - now) + 5);
+    return () => clearTimeout(t);
+  });
+  // The row: the cards, with empty slots where cards left.
+  const row: (DuelCard | { gap: number })[] = [...cards];
+  [...gaps.current.entries()].sort((x, y) => x[1].index - y[1].index).forEach(([id, g]) => row.splice(Math.min(g.index, row.length), 0, { gap: id }));
+  return row;
+}
+
+/**
+ * Cards coming into the hand join it one after another.
+ *  - Into an empty hand: the row is laid out for all of them at once (centred), with an empty
+ *    place for each; each card then flies into its own place when its time comes
+ *    (motion.handAt), so nothing moves but the cards flying in.
+ *  - Into a hand that has cards: each takes its place only once the one before it has landed
+ *    (and not before its own time), so it flies to a place that stays put, and the row
+ *    re-centres in one slide per card.
+ * Returns the cards in the row right now and the places kept for cards still to come.
+ */
+function useHandSchedule(cards: DuelCard[]) {
+  const [, force] = useState(0);
+  /** Cards still to join, in the order they came. */
+  const queue = useRef<number[]>([]);
+  /** Cards whose place is already kept in the row (they came into an empty hand). */
+  const reserved = useRef(new Set<number>());
+  /** The last card that joined (its landing lets the next one in). */
+  const lastJoined = useRef<number | null>(null);
+  /** When each queued card may join, counted from when this row first saw it (not from when
+   * the game handled the draw: a burst of messages can be handled long before it is shown). */
+  const joinAt = useRef(new Map<number, number>());
+  const ids = new Set(cards.map((c) => c.id));
+  /** An empty hand gathers the cards coming in until then before laying out their places. */
+  const collectUntil = useRef(0);
+  /** Cards already let in (their own flight is under way or done). */
+  const joined = useRef(new Set<number>());
+  // Only cards coming from a pile (Deck, GY, banished, Extra Deck) wait for their turn hidden:
+  // the pile is still there to see. A card coming from the field takes its place at once and
+  // stays visible where it was until it flies (see useMoveAnimation), so it never vanishes.
+  const fresh = cards.filter(
+    (c) => motion.handAt.has(c.id) && motion.handFrom.has(c.id) && !queue.current.includes(c.id) && !joined.current.has(c.id),
+  );
+  for (const id of [...joined.current]) if (!ids.has(id)) joined.current.delete(id);
+  if (fresh.length) {
+    const seen = performance.now();
+    // Into an empty hand: nothing in it but these and others of the same batch not yet dealt.
+    const empty = cards.every((c) => fresh.includes(c) || reserved.current.has(c.id));
+    if (empty) {
+      // Gather the whole batch first (the game may send the cards a few messages apart), then
+      // lay out all their places at once, centred, and deal them one after another.
+      if (collectUntil.current <= seen) collectUntil.current = seen + HAND_COLLECT_MS;
+      for (const c of fresh) {
+        queue.current.push(c.id);
+        reserved.current.add(c.id);
+      }
+      let at = collectUntil.current;
+      for (const id of queue.current) {
+        if (!reserved.current.has(id)) continue;
+        joinAt.current.set(id, at);
+        at += HAND_STEP;
+      }
+    } else {
+      // One after another, after the ones already waiting.
+      let at = Math.max(seen, ...queue.current.map((id) => (joinAt.current.get(id) ?? 0) + HAND_STEP));
+      for (const c of fresh) {
+        queue.current.push(c.id);
+        joinAt.current.set(c.id, at);
+        at += HAND_STEP;
+      }
+    }
+  }
+  queue.current = queue.current.filter((id) => ids.has(id));
+  for (const id of [...joinAt.current.keys()]) if (!queue.current.includes(id)) joinAt.current.delete(id);
+  for (const id of [...reserved.current]) if (!queue.current.includes(id)) reserved.current.delete(id);
+  const now = performance.now();
+  let wake = 0;
+  // Let in as many as are due.
+  while (queue.current.length) {
+    const id = queue.current[0];
+    const due = joinAt.current.get(id) ?? 0;
+    // A kept place doesn't move: no need to wait for the one before to land.
+    const landed =
+      !reserved.current.has(id) && lastJoined.current !== null && ids.has(lastJoined.current) ? (arrivalTime(lastJoined.current) ?? 0) : 0;
+    const at = Math.max(due, landed);
+    if (at > now + 15) {
+      wake = at;
+      break;
+    }
+    queue.current.shift();
+    reserved.current.delete(id);
+    joinAt.current.delete(id);
+    joined.current.add(id);
+    // It flies as soon as it is in the row.
+    motion.handAt.set(id, now);
+    lastJoined.current = id;
+    // The one just let in hasn't started flying yet: if the next waits for its landing, that
+    // time is known once it is drawn (checked again after this render).
+    if (queue.current.length && !reserved.current.has(queue.current[0])) {
+      wake = now + 30;
+      break;
+    }
+  }
+  useEffect(() => {
+    if (!wake) return;
+    const t = setTimeout(() => force((n) => n + 1), Math.max(0, wake - performance.now()));
+    return () => clearTimeout(t);
+  });
+  if (collectUntil.current > now && (!wake || collectUntil.current < wake)) wake = collectUntil.current;
+  const waiting = new Set(queue.current);
+  // While still gathering, no places yet (they would shift as more cards come).
+  const kept = collectUntil.current > now ? new Set<number>() : new Set(reserved.current);
+  return { shown: waiting.size ? cards.filter((c) => !waiting.has(c.id)) : cards, kept };
+}
+
+/**
+ * The order cards are shown in a hand: the cards already shown keep their places, whatever
+ * the game does with the hand's order; new cards are added on the right. (The game's own
+ * order still decides what is sent back; this is only how the row looks.)
+ */
+function useStableOrder(cards: DuelCard[]) {
+  const order = useRef<number[]>(cards.map((c) => c.id));
+  const byId = new Map(cards.map((c) => [c.id, c]));
+  const kept = order.current.filter((id) => byId.has(id));
+  const added = cards.filter((c) => !kept.includes(c.id)).map((c) => c.id);
+  order.current = [...kept, ...added];
+  return order.current.map((id) => byId.get(id)!);
+}
+
 /** A row of cards in hand, always the same height. */
 export function HandRow({
   cards,
@@ -502,6 +661,8 @@ export function HandRow({
   actionable,
   linked,
   chainLinks,
+  selectCards,
+  pickedCards,
   onCardClick,
   onHover,
   maxWidth,
@@ -514,12 +675,23 @@ export function HandRow({
   actionable: Set<number>;
   linked: Set<number>;
   chainLinks: Map<number, number[]>;
+  /** Cards that can be chosen right here (a card prompt), and those picked so far. */
+  selectCards?: Set<number>;
+  pickedCards?: Set<number>;
   onCardClick?: (card: DuelCard, el: HTMLElement) => void;
   onHover: (card: DuelCard | null, code: number) => void;
 }) {
   const H = cardHeight(width);
+  const ordered = useStableOrder(cards);
+  const schedule = useHandSchedule(ordered);
+  const slots = useHandGaps(schedule.shown);
+  // Empty places kept for cards still flying into an empty hand, where they will be.
+  // (They came in order into an empty hand, so they follow the ones already in it.)
+  for (const c of ordered) if (schedule.kept.has(c.id)) slots.push({ gap: c.id });
+  // New cards go on each player's own right: the opponent faces you, so theirs is on your left.
+  if (flipped) slots.reverse();
   // Overlap cards when the hand gets large (or doesn't fit the space it has).
-  const n = cards.length;
+  const n = slots.length;
   const overlap =
     maxWidth !== undefined
       ? n > 1
@@ -530,7 +702,8 @@ export function HandRow({
         : 0;
   return (
     <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: maxWidth !== undefined ? "100%" : H + 14, flex: "0 0 auto" }}>
-      {cards.map((c, i) => {
+      {slots.map((c, i) => {
+        if ("gap" in c) return <Box key={`gap${c.gap}`} sx={{ ml: i === 0 ? 0 : `${4 - overlap}px`, width, height: H, flex: "0 0 auto" }} />;
         const known = !hidden || (c.code !== 0 && c.isPublic);
         return (
           <Box key={c.id} sx={{ ml: i === 0 ? 0 : `${4 - overlap}px`, zIndex: i }}>
@@ -541,7 +714,8 @@ export function HandRow({
               flipped={flipped}
               trackId={c.id}
               chainLinks={chainLinks.get(c.id)}
-              highlight={linked.has(c.id) ? "linked" : actionable.has(c.id) ? "action" : null}
+              highlight={linked.has(c.id) ? "linked" : selectCards?.has(c.id) ? "select" : actionable.has(c.id) ? "action" : null}
+              selected={pickedCards?.has(c.id)}
               onClick={onCardClick ? (e) => onCardClick(c, e.currentTarget) : undefined}
               onHover={() => known && onHover(c, c.code)}
               onLeave={() => onHover(null, 0)}
@@ -550,5 +724,105 @@ export function HandRow({
         );
       })}
     </Box>
+  );
+}
+
+/** How long the materials of a just-summoned Xyz Monster take to appear (glow, then cards). */
+const MATERIALS_SPAWN_MS = 650;
+
+/**
+ * An Xyz Monster's materials, under it and turned across it (together they form a "+"), up to
+ * three stacked. They sit 90° behind the monster's own angle and turn with it when it changes
+ * position: on your side they face left in attack position and up in defense position, on
+ * the opponent's right and down. Clicking them lists the materials.
+ *
+ * After an Xyz Summon they only appear once the monster has landed (motion.materialsAt):
+ * first as a glow in the monster's Attribute colour in the shape of a card, which then
+ * turns into the cards.
+ */
+function XyzMaterials({
+  card,
+  width,
+  height,
+  flipped,
+  color,
+  onClick,
+}: {
+  card: DuelCard;
+  width: number;
+  height: number;
+  flipped: boolean;
+  color: string;
+  onClick?: () => void;
+}) {
+  const [phase, setPhase] = useState<"wait" | "spawn" | "shown">(() => (motion.materialsAt.has(card.id) ? "wait" : "shown"));
+  useEffect(() => {
+    if (phase !== "wait") return;
+    const at = motion.materialsAt.get(card.id) ?? 0;
+    const t = setTimeout(() => {
+      motion.materialsAt.delete(card.id);
+      setPhase("spawn");
+    }, Math.max(0, at - performance.now()));
+    return () => clearTimeout(t);
+  }, [phase, card.id]);
+  useEffect(() => {
+    if (phase !== "spawn") return;
+    const t = setTimeout(() => setPhase("shown"), MATERIALS_SPAWN_MS);
+    return () => clearTimeout(t);
+  }, [phase]);
+  if (phase === "wait") return null;
+  const spawning = phase === "spawn";
+  const angle = (isDefense(card) ? 90 : 0) - 90;
+  const shown = card.overlays.slice(0, 3);
+  return (
+    <>
+      {shown.map((m, i) => {
+        const o = (shown.length - 1 - i) * 2;
+        return (
+          <Box
+            key={m.id}
+            title="Show materials"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick?.();
+            }}
+            sx={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              width,
+              height,
+              transform: `translate(calc(-50% + ${o}px), calc(-50% + ${o}px)) rotate(${angle}deg)`,
+              transition: "transform .25s ease",
+              cursor: onClick ? "pointer" : "default",
+            }}
+          >
+            <Box sx={spawning ? { opacity: 0, animation: `xyzMatCard 300ms ease-out 260ms forwards` } : undefined}>
+              <CardImage code={m.code} width={width} flipped={flipped} />
+            </Box>
+            {spawning && (
+              <Box
+                sx={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: "4px",
+                  background: `radial-gradient(ellipse at center, #ffffff 0%, ${color} 55%, ${color}cc 100%)`,
+                  boxShadow: `0 0 10px 3px ${color}, 0 0 22px 6px ${color}88`,
+                  pointerEvents: "none",
+                  opacity: 0,
+                  animation: `xyzMatGlow ${MATERIALS_SPAWN_MS}ms ease-out forwards`,
+                  "@keyframes xyzMatGlow": {
+                    "0%": { opacity: 0, transform: "scale(.6)" },
+                    "40%": { opacity: 1, transform: "scale(1.04)" },
+                    "100%": { opacity: 0, transform: "scale(1)" },
+                  },
+                  "@keyframes xyzMatCard": { from: { opacity: 0 }, to: { opacity: 1 } },
+                }}
+              />
+            )}
+          </Box>
+        );
+      })}
+    </>
   );
 }

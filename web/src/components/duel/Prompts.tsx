@@ -248,9 +248,14 @@ function SelectCards({ client, prompt, msg, onHover, onMinimize }: PromptProps &
       return [...s, i];
     });
   };
-  // Single selection answers immediately, like EDOPro.
+  // Single selection answers immediately, like EDOPro; so does picking the last tribute needed.
   const click = (i: number) => {
     if (msg.min === 1 && msg.max === 1 && !isTribute) return client.respond(respond.cards([i]));
+    if (isTribute && !sel.includes(i) && sel.length < msg.max) {
+      const next = [...sel, i];
+      const sum = next.reduce((a, j) => a + weight(j), 0);
+      if (sum >= msg.min && (sum >= msg.max || next.length >= msg.max)) return client.respond(respond.cards(next));
+    }
     toggle(i);
   };
   const title = hintText(res!, prompt, isTribute ? 531 : 560);

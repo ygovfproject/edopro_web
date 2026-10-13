@@ -4,7 +4,7 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import LinkIcon from "@mui/icons-material/Link";
 import { useApp } from "./AppContext";
-import { DROP_MS, FADE_MS, FLY_MS, LIFT, motion, type AppearStyle, type LandPlan } from "@/lib/game/motion";
+import { DROP_MS, FADE_MS, FLY_MS, LIFT, WINDUP, motion, type AppearStyle, type LandPlan } from "@/lib/game/motion";
 import { cardImage } from "@/lib/data/config";
 
 /** Every card is drawn at exactly 59:86 (width:height). */
@@ -40,9 +40,21 @@ interface Props {
 /* ---------- move animations (FLIP) ---------- */
 
 const lastRects = new Map<number, DOMRect>();
+/** The element showing each card right now, so its rect can be re-read after a resize. */
+const tracked = new Map<number, HTMLElement>();
 if (typeof window !== "undefined") {
-  // Layout changes from resizing are not card moves.
-  window.addEventListener("resize", () => lastRects.clear());
+  // Layout changes from resizing are not card moves: once the page has settled, every card's
+  // stored place becomes where it is now (cards still moving keep their destination).
+  let pending = 0;
+  window.addEventListener("resize", () => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      for (const [id, el] of tracked) {
+        if (!el.isConnected) tracked.delete(id);
+        else if (!el.getAnimations().length) lastRects.set(id, el.getBoundingClientRect());
+      }
+    });
+  });
 }
 
 /** Where vanishing cards (see motion.vanish) were when they left. */
@@ -58,6 +70,14 @@ export function forgetVanish(trackId: number) {
   // Materials that went somewhere not drawn (Xyz materials, the Deck) never used theirs.
   motion.appear.delete(trackId);
   vanishRects.delete(trackId);
+}
+
+/** When (performance.now() ms) each card's latest move animation ends: it has arrived. */
+const arrivals = new Map<number, number>();
+
+/** When the card has arrived where it was going (or undefined if it never moved on screen). */
+export function arrivalTime(trackId: number): number | undefined {
+  return arrivals.get(trackId);
 }
 
 /** Last settled on-screen rect of a card (its destination while it is still flying). */
@@ -80,12 +100,14 @@ function landAnimation(el: HTMLElement, plan: LandPlan, prev: DOMRect | undefine
   const lift = `translate(0, ${plan.dir * LIFT.rise * now.height}px) scale(${LIFT.scale})`;
   const at = plan.dropAt !== undefined ? lift : "translate(0, 0) scale(1)";
   let start = at;
+  // Link: grows in from half size where it appears.
+  if (plan.enter === "grow") start = `translate(0, ${plan.dir * LIFT.rise * now.height}px) scale(${LIFT.scale * 0.5})`;
   if (plan.enter === "fly" && prev && now.width) {
     const dx = prev.left + prev.width / 2 - (now.left + now.width / 2);
     const dy = prev.top + prev.height / 2 - (now.top + now.height / 2);
     start = `translate(${dx}px, ${dy}px) scale(${prev.width / now.width})`;
   }
-  const enterMs = plan.enter === "fly" ? FLY_MS : plan.enter === "fade" ? FADE_MS : 1;
+  const enterMs = plan.enter === "fly" ? FLY_MS : plan.enter === "fade" || plan.enter === "grow" ? FADE_MS : 1;
   const shown = plan.hold + enterMs;
   const total = plan.dropAt !== undefined ? Math.max(plan.dropAt, shown) + DROP_MS : shown;
   const o = (t: number) => Math.min(1, Math.max(0, t / total));
@@ -94,13 +116,38 @@ function landAnimation(el: HTMLElement, plan: LandPlan, prev: DOMRect | undefine
   if (plan.hold > 0) frames.push({ offset: o(plan.hold), transform: start, opacity: visibleFrom, zIndex: 50 });
   frames.push({ offset: o(shown), transform: at, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
   if (plan.dropAt !== undefined) {
-    if (plan.dropAt > shown) frames.push({ offset: o(plan.dropAt), transform: lift, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
+    // Wind-up: by how hard it will land, it rises a little higher and grows before dropping
+    // (the drop still starts at dropAt, so it lands at the same moment, only harder).
+    const w = WINDUP[plan.windup ?? 0];
+    const windMs = Math.min(w.ms, Math.max(0, plan.dropAt - shown));
+    if (windMs > 0) {
+      const high = `translate(0, ${plan.dir * (LIFT.rise + w.rise) * now.height}px) scale(${LIFT.scale + w.grow})`;
+      frames.push({ offset: o(plan.dropAt - windMs), transform: lift, opacity: 1, zIndex: 50, easing: "cubic-bezier(.3,0,.3,1)" });
+      frames.push({ offset: o(plan.dropAt), transform: high, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
+    } else if (plan.dropAt > shown) {
+      frames.push({ offset: o(plan.dropAt), transform: lift, opacity: 1, zIndex: 50, easing: "cubic-bezier(.55,0,1,.45)" });
+    }
     frames.push({ offset: 1, transform: "translate(0, 0) scale(1)", opacity: 1, zIndex: 50 });
   }
   // The flight eases out; the fall eases in (set per keyframe above).
   frames[0].easing = plan.enter === "fly" ? "cubic-bezier(.2,.7,.2,1)" : "linear";
   if (frames.length > 2 && plan.hold > 0) frames[1].easing = plan.enter === "fly" ? "cubic-bezier(.2,.7,.2,1)" : "ease-out";
+  // Shining (Xyz, Ritual): part of the card's own animation, so the light stays on the card
+  // through the wind-up and the drop, and is gone once it has landed.
+  if (plan.glow) {
+    const c = plan.glow;
+    const lit = `brightness(1.55) drop-shadow(0 0 8px ${c}) drop-shadow(0 0 24px ${c})`;
+    const flare = `brightness(2.2) drop-shadow(0 0 12px ${c}) drop-shadow(0 0 36px ${c})`;
+    const off = `brightness(1) drop-shadow(0 0 0px transparent) drop-shadow(0 0 0px transparent)`;
+    // The frame where it has fully appeared.
+    const shownAt = plan.hold > 0 ? 2 : 1;
+    frames.forEach((f, i) => {
+      // Flares as it appears, settles into a glow until the drop, and fades as it lands.
+      f.filter = i === frames.length - 1 && plan.dropAt !== undefined ? off : i <= shownAt ? flare : lit;
+    });
+  }
   el.animate(frames, { duration: total, fill: "none" });
+  return total;
 }
 
 function useMoveAnimation(trackId: number | undefined) {
@@ -109,13 +156,47 @@ function useMoveAnimation(trackId: number | undefined) {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || trackId === undefined) return;
-    if (el.getAnimations().length) {
-      // While an animation runs the rect is mid-flight; keep the stored destination.
-      if (shown.current === trackId) return;
+    const running = el.getAnimations();
+    if (running.length) {
+      if (shown.current === trackId) {
+        // Still moving. Has its place changed meanwhile (e.g. the hand re-centred as another
+        // card came in)? Look where it is now, and where its place is without the animation.
+        const visual = el.getBoundingClientRect();
+        const saved = running.map((a) => ({ frames: (a.effect as KeyframeEffect).getKeyframes(), timing: a.effect!.getTiming(), time: a.currentTime }));
+        running.forEach((a) => a.cancel());
+        const place = el.getBoundingClientRect();
+        const dest = lastRects.get(trackId);
+        if (!dest || (Math.abs(place.left - dest.left) < 2 && Math.abs(place.top - dest.top) < 2)) {
+          // Same place: carry on exactly where it was.
+          for (const a of saved) {
+            const again = el.animate(a.frames, a.timing);
+            again.currentTime = a.time;
+          }
+          return;
+        }
+        // A new place: glide there from where it was on screen right before this update (no
+        // jump). The page has already moved it with its place, so that is its old place plus
+        // how far off its place the animation still had it.
+        lastRects.set(trackId, place);
+        const dx = visual.left - place.left + (dest.left - place.left) + (visual.width - place.width) / 2;
+        const dy = visual.top - place.top + (dest.top - place.top) + (visual.height - place.height) / 2;
+        const glide = Math.min(520, 380 + Math.hypot(dx, dy) * 0.4);
+        arrivals.set(trackId, performance.now() + glide);
+        el.animate(
+          [
+            { transform: `translate(${dx}px, ${dy}px) scale(${visual.width / (place.width || 1)})`, zIndex: 50 },
+            { transform: "translate(0, 0) scale(1)", zIndex: 50 },
+          ],
+          // Already moving: carries on at its pace (no fresh burst of speed), settles gently.
+          { duration: glide, easing: "cubic-bezier(.3,.35,.25,1)" },
+        );
+        return;
+      }
       // The element now shows another card: drop the old card's animation and start fresh.
-      el.getAnimations().forEach((a) => a.cancel());
+      running.forEach((a) => a.cancel());
     }
     shown.current = trackId;
+    tracked.set(trackId, el);
     const now = el.getBoundingClientRect();
     const prev = lastRects.get(trackId);
     lastRects.set(trackId, now);
@@ -124,7 +205,7 @@ function useMoveAnimation(trackId: number | undefined) {
     const plan = motion.land.get(trackId);
     if (plan) {
       motion.land.delete(trackId);
-      landAnimation(el, plan, prev, now);
+      arrivals.set(trackId, performance.now() + landAnimation(el, plan, prev, now));
       return;
     }
     const appear = motion.appear.get(trackId);
@@ -134,21 +215,40 @@ function useMoveAnimation(trackId: number | undefined) {
       const [from, to, length] = APPEAR[appear.style];
       const total = appear.hold + length;
       el.animate([from, { ...from, offset: appear.hold / total }, to], { duration: total, easing: "cubic-bezier(.2,.8,.3,1)" });
+      arrivals.set(trackId, performance.now() + total);
       return;
     }
+    arrivals.set(trackId, performance.now());
     if (vanished) return;
-    if (!prev || !now.width) return;
-    const dx = prev.left + prev.width / 2 - (now.left + now.width / 2);
-    const dy = prev.top + prev.height / 2 - (now.top + now.height / 2);
+    // Coming into a hand: from its pile if it wasn't drawn anywhere (e.g. from inside the
+    // Deck), and only when its turn comes (several fly in one after another).
+    const pileKey = motion.handFrom.get(trackId);
+    motion.handFrom.delete(trackId);
+    const startAt = motion.handAt.get(trackId);
+    motion.handAt.delete(trackId);
+    let from = prev;
+    if (!from && pileKey) {
+      const r = document.querySelector(`[data-pile="${pileKey}"]`)?.getBoundingClientRect();
+      if (r) from = new DOMRect(r.left + r.width / 2 - now.width / 2, r.top + r.height / 2 - now.height / 2, now.width, now.height);
+    }
+    if (!from || !now.width) return;
+    const dx = from.left + from.width / 2 - (now.left + now.width / 2);
+    const dy = from.top + from.height / 2 - (now.top + now.height / 2);
     if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
-    const scale = prev.width / now.width;
+    const scale = from.width / now.width;
     const distance = Math.hypot(dx, dy);
+    // Sliding along its row (a hand re-centring): slower and gentle. Anything else: a quick flight.
+    const slide = Math.abs(dy) < 3 && Math.abs(scale - 1) < 0.01 && Math.abs(dx) < now.width * 3;
+    const flight = slide ? 450 : Math.min(550, 220 + distance * 0.5);
+    const delay = startAt !== undefined ? Math.max(0, startAt - performance.now()) : 0;
+    arrivals.set(trackId, performance.now() + delay + flight);
     el.animate(
       [
         { transform: `translate(${dx}px, ${dy}px) scale(${scale})`, zIndex: 50 },
         { transform: "translate(0, 0) scale(1)", zIndex: 50 },
       ],
-      { duration: Math.min(550, 220 + distance * 0.5), easing: "cubic-bezier(.2,.7,.2,1)" },
+      // Waits where it was until its turn.
+      { duration: flight, delay, fill: "backwards", easing: slide ? "cubic-bezier(.45,0,.25,1)" : "cubic-bezier(.2,.7,.2,1)" },
     );
   });
   return ref;
@@ -287,6 +387,58 @@ function Glitch({ width, height, intro }: { width: number; height: number; intro
   );
 }
 
+/* ---------- turning over ---------- */
+
+/** How long a card takes to turn over (face-down <-> face-up), ms. */
+const FLIP_MS = 420;
+
+/**
+ * Turns a card over when it goes face-down <-> face-up in place (a Set card activated or
+ * flipped, a monster flipped face-down, a face-down monster flipped when attacked): it turns
+ * edge-on still showing its old side, swaps sides, and turns back open. Returns the side and
+ * code to draw right now, the element to turn, and whether it is turning.
+ */
+function useFlip(trackId: number | undefined, back: boolean, code: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const last = useRef({ id: trackId, back, code });
+  /** The old side, shown until the card is edge-on. */
+  const [old, setOld] = useState<{ back: boolean; code: number } | null>(null);
+  const [turning, setTurning] = useState(false);
+  useLayoutEffect(() => {
+    const prev = last.current;
+    last.current = { id: trackId, back, code };
+    // Only the same card changing sides (not a new card in this spot).
+    if (trackId === undefined || prev.id !== trackId || prev.back === back) return;
+    setOld({ back: prev.back, code: prev.code });
+    setTurning(true);
+    const anim = ref.current?.animate(
+      [
+        // One continuous turn: edge-on at the halfway point (where the sides swap), then it
+        // keeps turning the same way and opens from the other edge.
+        { transform: "perspective(700px) rotateY(0deg) scale(1)", easing: "ease-in" },
+        { transform: "perspective(700px) rotateY(-90deg) scale(1.06)", offset: 0.5 },
+        { transform: "perspective(700px) rotateY(90deg) scale(1.06)", offset: 0.5, easing: "ease-out" },
+        { transform: "perspective(700px) rotateY(0deg) scale(1)" },
+      ],
+      { duration: FLIP_MS },
+    );
+    const half = setTimeout(() => setOld(null), FLIP_MS / 2);
+    const done = setTimeout(() => setTurning(false), FLIP_MS);
+    return () => {
+      clearTimeout(half);
+      clearTimeout(done);
+      anim?.cancel();
+      setOld(null);
+      setTurning(false);
+    };
+  }, [trackId, back]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Turning over right now (this render already, before the effect starts the animation).
+  const changing = turning || old !== null || (trackId !== undefined && last.current.id === trackId && last.current.back !== back);
+  // Keep the newest code for the old side's face, if it was face-up and nothing better is known.
+  if (!old) last.current.code = code;
+  return { ref, turning, changing, back: old ? old.back : back, code: old ? old.code || code : code };
+}
+
 /* ---------- card back ---------- */
 
 function CardBack({ width, height }: { width: number; height: number }) {
@@ -316,6 +468,7 @@ function CardImageInner({
   const { config, res } = useApp();
   const [broken, setBroken] = useState<number | null>(null);
   const ref = useMoveAnimation(trackId);
+  const flip = useFlip(trackId, faceDown || !code, code);
   const height = cardHeight(width);
   const showBack = faceDown || !code;
   // The negated look's filter must be on the page before the card is drawn with it.
@@ -366,19 +519,22 @@ function CardImageInner({
           borderRadius: "4px",
           boxShadow: selected ? "0 0 0 3px #f5c518, 0 0 12px 3px rgba(245,197,24,.8)" : ring,
           overflow: "hidden",
-          bgcolor: "#111111",
+          // Clear while turning over, so the narrowing card shows the field behind it.
+          bgcolor: flip.turning ? "transparent" : "#111111",
           // Negated: black and white except the reds (and the glitched red cross on hover, see Glitch).
           filter: negated && !negateIntro ? NEGATED_FILTER : "none",
-          transition: "transform .25s ease, filter .3s ease",
+          // Turning over and changing position together: one motion, same length and pace.
+          transition: flip.changing ? `transform ${FLIP_MS}ms ease-in-out, filter .3s ease` : "transform .25s ease, filter .3s ease",
           // Pop-up: in colour first, then it turns grey as the glitch starts.
           ...(negated && negateIntro
             ? { animation: "negateIn .45s steps(1, end) .3s forwards", "@keyframes negateIn": { to: { filter: NEGATED_FILTER } } }
             : {}),
         }}
       >
-        {showBack ? (
+        <Box ref={flip.ref} sx={{ width, height }}>
+        {flip.back ? (
           <CardBack width={width} height={height} />
-        ) : broken === code || !config ? (
+        ) : broken === flip.code || !config ? (
           <Box
             sx={{
               width,
@@ -399,16 +555,17 @@ function CardImageInner({
           </Box>
         ) : (
           <img
-            src={cardImage(config, code)}
+            src={cardImage(config, flip.code)}
             alt={name}
             width={width}
             height={height}
             loading="lazy"
             draggable={false}
-            onError={() => setBroken(code)}
+            onError={() => setBroken(flip.code)}
             style={{ display: "block", width, height, objectFit: "cover" }}
           />
         )}
+        </Box>
       </Box>
       {negated && !showBack && (
         <Box

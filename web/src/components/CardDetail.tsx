@@ -8,7 +8,7 @@ import type { DuelCard } from "@/lib/game/duel";
 
 interface Props {
   code: number;
-  /** Live card on the field, for current ATK/DEF and counters. */
+  /** Live card on the field: current ATK/DEF, changed name, negated, materials, counters. */
   live?: DuelCard | null;
   imageWidth?: number;
 }
@@ -42,7 +42,13 @@ export default function CardDetail({ code, live, imageWidth = 180 }: Props) {
   const def = live?.hasStats ? live.defense : info.defense;
   const level = live?.hasStats ? (isXyz ? live.rank : isLink ? live.link : live.level) : info.level;
   const attr = res!.attributeNames(live?.hasStats ? live.attribute : info.attribute).join("/");
-  const counters = live ? Object.entries(live.counters) : [];
+  const counters = live ? Object.entries(live.counters).filter(([, n]) => n > 0) : [];
+  // Its name while on the field, if an effect changes it (e.g. "Eldlich the Mad Golden Lord"
+  // is treated as "Eldlich the Golden Lord"). The database alias only marks alternate artworks.
+  const renamed = live && live.alias && live.alias !== code && live.alias !== info.alias ? live.alias : 0;
+  // STATUS_DISABLED or STATUS_FORBIDDEN (same as the board's negated look).
+  const negated = !!live && !(live.position & 0xa) && (live.status & (0x1 | 0x4000000)) !== 0;
+  const materials = live?.overlays.length ?? 0;
   return (
     // Fills its panel; only the card text scrolls.
     <Stack spacing={1} sx={{ p: 1, minWidth: 0, height: "100%", minHeight: 0, boxSizing: "border-box" }}>
@@ -52,6 +58,16 @@ export default function CardDetail({ code, live, imageWidth = 180 }: Props) {
       <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
         {info.name}
       </Typography>
+      {(renamed !== 0 || negated || materials > 0 || counters.length > 0) && (
+        <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", rowGap: 0.5 }}>
+          {renamed !== 0 && <Chip size="small" color="info" label={`Name: ${res!.cards.name(renamed)}`} sx={{ maxWidth: "100%" }} />}
+          {negated && <Chip size="small" color="error" label="Negated" />}
+          {materials > 0 && <Chip size="small" label={`Materials: ${materials}`} />}
+          {counters.map(([t, n]) => (
+            <Chip key={t} size="small" color="primary" label={`${res!.counterName(Number(t))}: ${n}`} />
+          ))}
+        </Stack>
+      )}
       <Typography variant="caption" color="text.secondary">
         {res!.typeLine(info)}
         {isMonster && attr ? ` · ${attr}` : ""}
@@ -63,16 +79,6 @@ export default function CardDetail({ code, live, imageWidth = 180 }: Props) {
           {!isLink && <Chip size="small" label={`DEF ${stat(def)}`} color={live?.hasStats && def !== info.defense ? "secondary" : "default"} />}
           {(info.type & TYPE.PENDULUM) !== 0 && <Chip size="small" label={`Scale ${info.lscale}/${info.rscale}`} />}
         </Stack>
-      )}
-      {counters.length > 0 && (
-        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-          {counters.map(([t, n]) => (
-            <Chip key={t} size="small" color="primary" label={`${res!.counterName(Number(t))}: ${n}`} />
-          ))}
-        </Stack>
-      )}
-      {live && live.overlays.length > 0 && (
-        <Typography variant="caption">Materials: {live.overlays.map((o) => (o.code ? res!.cards.name(o.code) : "?")).join(", ")}</Typography>
       )}
       <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.35, flex: "1 1 auto", minHeight: 40, overflowY: "auto", pr: 0.5 }}>
         {info.desc}

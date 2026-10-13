@@ -27,6 +27,8 @@ export interface ActionMap {
   /** Actions whose card isn't on the visible board (e.g. Xyz materials). */
   loose: LooseAction[];
   phase: PhaseAction[];
+  /** Shuffle the hand (its own button, apart from the phase buttons). */
+  shuffle?: PhaseAction;
 }
 
 export interface Describer {
@@ -72,9 +74,9 @@ export function actionsFor(msg: ServerMessage | null | undefined, duel: DuelStat
     msg.activates.forEach((c, i) =>
       add(c, { label: activateLabel(d, c.code, c.description, c.client_mode), kind: "activate", response: respond.idle(IDLE.ACTIVATE, i) }),
     );
-    if (msg.to_bp) map.phase.push({ label: "Battle Phase", response: respond.idle(IDLE.TO_BP) });
-    if (msg.to_ep) map.phase.push({ label: "End Turn", response: respond.idle(IDLE.TO_EP) });
-    if (msg.shuffle) map.phase.push({ label: "Shuffle hand", response: respond.idle(IDLE.SHUFFLE) });
+    if (msg.to_bp) map.phase.push({ label: "BP", response: respond.idle(IDLE.TO_BP) });
+    if (msg.to_ep) map.phase.push({ label: "EP", response: respond.idle(IDLE.TO_EP) });
+    if (msg.shuffle) map.shuffle = { label: "Shuffle hand", response: respond.idle(IDLE.SHUFFLE) };
   } else if (msg.type === T.SELECT_BATTLECMD) {
     msg.chains.forEach((c, i) =>
       add(c, { label: activateLabel(d, c.code, c.description, c.client_mode), kind: "activate", response: respond.battle(BATTLE.ACTIVATE, i) }),
@@ -82,8 +84,8 @@ export function actionsFor(msg: ServerMessage | null | undefined, duel: DuelStat
     msg.attacks.forEach((c, i) =>
       add(c, { label: c.can_direct ? "Attack (can attack directly)" : "Attack", kind: "attack", response: respond.battle(BATTLE.ATTACK, i) }),
     );
-    if (msg.to_m2) map.phase.push({ label: "Main Phase 2", response: respond.battle(BATTLE.TO_M2) });
-    if (msg.to_ep) map.phase.push({ label: "End Turn", response: respond.battle(BATTLE.TO_EP) });
+    if (msg.to_m2) map.phase.push({ label: "MP2", response: respond.battle(BATTLE.TO_M2) });
+    if (msg.to_ep) map.phase.push({ label: "EP", response: respond.battle(BATTLE.TO_EP) });
   }
   return map;
 }

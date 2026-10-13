@@ -161,6 +161,30 @@ export class Resources {
     }
   }
 
+  /** Short phase name for the board and buttons (logs use the full name). */
+  phaseShort(phase: number): string {
+    switch (phase) {
+      case PHASE.DRAW:
+        return "DP";
+      case PHASE.STANDBY:
+        return "SP";
+      case PHASE.MAIN1:
+        return "MP1";
+      case PHASE.BATTLE_START:
+      case PHASE.BATTLE_STEP:
+      case PHASE.DAMAGE:
+      case PHASE.DAMAGE_CAL:
+      case PHASE.BATTLE:
+        return "BP";
+      case PHASE.MAIN2:
+        return "MP2";
+      case PHASE.END:
+        return "EP";
+      default:
+        return "";
+    }
+  }
+
   formatter(): Formatter {
     return {
       name: (code) => (code ? this.cards.name(code) : "a face-down card"),

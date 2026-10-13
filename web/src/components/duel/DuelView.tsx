@@ -23,7 +23,7 @@ import {
 import FlagIcon from "@mui/icons-material/Flag";
 import { useApp, useClientState } from "../AppContext";
 import Board, { HandRow, type ZoneGlow } from "./Board";
-import PromptDialog, { isBoardPrompt } from "./Prompts";
+import PromptDialog, { hintText, isBoardPrompt } from "./Prompts";
 import FieldDialog, { FieldWindow } from "./FieldDialog";
 import CardDetail from "../CardDetail";
 import ChatBox from "../ChatBox";
@@ -31,10 +31,11 @@ import { CardImage, cardHeight } from "../CardImage";
 import SideDeckDialog from "./SideDeckDialog";
 import LinesOverlay, { type Link } from "./LinesOverlay";
 import FxOverlay from "./FxOverlay";
+import { LiquidMetal } from "./fx/LiquidMetal";
 import type { DuelClient } from "@/lib/game/client";
-import { LOC, type DuelCard } from "@/lib/game/duel";
-import { actionsFor, disabledZoneKeys, selectableZones, zoneKey, type CardAction, type Zone } from "@/lib/game/actions";
-import { OcgMessageType } from "@/lib/protocol/gamemsg";
+import { LOC, type DuelCard, type DuelState } from "@/lib/game/duel";
+import { actionsFor, disabledZoneKeys, selectableZones, sumCheck, zoneKey, type CardAction, type Zone } from "@/lib/game/actions";
+import { OcgMessageType, type ServerMessage } from "@/lib/protocol/gamemsg";
 import { respond } from "@/lib/protocol/responses";
 import { MASTER_RULES } from "@/lib/protocol/constants";
 import { fieldLayout, linkedZones } from "@/lib/game/layout";
@@ -186,7 +187,85 @@ export default function DuelView({
     if (code) setHover({ code, card });
   }, []);
 
+  // Choosing cards that are all on the field or in a hand: done right there, no pop-up.
+  const boardSel = useMemo(() => boardSelection(msg, duel), [msg, duel, client.rev]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Picked so far (indices into the prompt's list), for prompts answered all at once. */
+  const [boardPicked, setBoardPicked] = useState<number[]>([]);
+  /** The player asked for the usual list instead. */
+  const [boardList, setBoardList] = useState(false);
+  useEffect(() => {
+    setBoardPicked([]);
+    setBoardList(false);
+  }, [prompt?.id]);
+  const onBoard = !!boardSel && !boardList;
+  const boardState = (() => {
+    if (!boardSel || !msg) return null;
+    const single = boardSel.kind === "cards" && boardSel.min === 1 && boardSel.max === 1 && !boardSel.tribute;
+    const weight = (i: number) => (boardSel.weights ? Math.max(1, boardSel.weights[i] || 1) : 1);
+    const total = boardPicked.reduce((a, i) => a + weight(i), 0);
+    let ok = false;
+    if (boardSel.kind === "cards") ok = boardSel.tribute ? total >= boardSel.min && boardPicked.length <= boardSel.max : boardPicked.length >= boardSel.min && boardPicked.length <= boardSel.max;
+    if (boardSel.kind === "sum") {
+      const params = [...boardSel.must, ...boardPicked.map((i) => boardSel.amounts[i])];
+      const countOk = !boardSel.exact || (boardPicked.length >= boardSel.min && boardPicked.length <= boardSel.max);
+      ok = boardPicked.length > 0 && countOk && sumCheck(params, boardSel.amount, boardSel.exact);
+    }
+    // Candidates (white) and what is picked (gold), by DuelCard id.
+    const candidates = new Set<number>();
+    const picked = new Set<number>(boardSel.fixed);
+    for (const [id, e] of boardSel.byCard) {
+      if (e.unselect) picked.add(id);
+      else candidates.add(id);
+      if (!e.unselect && boardPicked.includes(e.index)) picked.add(id);
+    }
+    return { single, ok, candidates, picked };
+  })();
+
+  const onBoardPick = (card: DuelCard) => {
+    if (!boardSel || !msg) return false;
+    const e = boardSel.byCard.get(card.id);
+    if (!e) return false;
+    if (boardSel.kind === "unselect") {
+      // One card per answer, like the list: picking or un-picking answers right away.
+      const ref = boardSel.refs[e.unselect ? boardSel.selectCount + e.index : e.index];
+      client.pickMaterial(ref, !e.unselect);
+      client.respond(respond.unselect(e.unselect ? boardSel.selectCount + e.index : e.index));
+      return true;
+    }
+    if (boardState?.single) {
+      client.respond(respond.cards([e.index]));
+      return true;
+    }
+    const s0 = boardPicked;
+    let next: number[];
+    if (s0.includes(e.index)) next = s0.filter((x) => x !== e.index);
+    else if (boardSel.kind === "cards" && boardSel.max === 1) next = [e.index];
+    else if (boardSel.kind === "cards" && s0.length >= boardSel.max) next = s0;
+    else next = [...s0, e.index];
+    // Picking the last card needed continues right away (no Confirm): the maximum is reached
+    // (tributes counted by tribute value), or the total of a sum selection is made.
+    if (next.length > s0.length) {
+      if (boardSel.kind === "cards") {
+        const total = next.reduce((a, i) => a + (boardSel.weights ? Math.max(1, boardSel.weights[i] || 1) : 1), 0);
+        if (total >= boardSel.min && (total >= boardSel.max || next.length >= boardSel.max)) {
+          client.respond(respond.cards(next));
+          return true;
+        }
+      } else if (boardSel.kind === "sum") {
+        const params = [...boardSel.must, ...next.map((i) => boardSel.amounts[i])];
+        const countOk = !boardSel.exact || (next.length >= boardSel.min && next.length <= boardSel.max);
+        if (countOk && sumCheck(params, boardSel.amount, boardSel.exact)) {
+          client.respond(respond.cards(next));
+          return true;
+        }
+      }
+    }
+    setBoardPicked(next);
+    return true;
+  };
+
   const onCardClick = (card: DuelCard, el: HTMLElement) => {
+    if (onBoard && onBoardPick(card)) return;
     if (card.code) setHover({ code: card.code, card });
     const a = actions.byCard.get(card.id);
     if (a?.length) setMenu({ el, actions: a, title: card.code ? res!.cards.name(card.code) : "Card" });
@@ -206,7 +285,7 @@ export default function DuelView({
       .join(" & ");
   const names = { [me]: teamNames(myTeam) || "You", [opp]: teamNames(1 - myTeam) || "Opponent" } as Record<number, string>;
 
-  const showPrompt = prompt && !isBoardPrompt(prompt) && minimized !== prompt.id;
+  const showPrompt = prompt && !isBoardPrompt(prompt) && !onBoard && minimized !== prompt.id;
   const hint = (() => {
     if (!msg) return duel.waiting ? "Waiting for opponent…" : "";
     if (msg.type === OcgMessageType.SELECT_IDLECMD) return "Your move: click a highlighted card, or choose a phase.";
@@ -216,6 +295,13 @@ export default function DuelView({
       return prompt?.hint ? res!.sys(569).replace("%ls", res!.cards.name(Number(prompt.hint))) : res!.sys(560);
     }
     if (msg.type === OcgMessageType.SELECT_DISFIELD) return `${res!.sys(570)} (${placeSel.length}/${placeNeeded})`;
+    if (onBoard && boardSel && prompt) {
+      const title = hintText(res!, prompt, boardSel.kind === "cards" && boardSel.tribute ? 531 : 560);
+      if (boardSel.kind === "sum") return `${title}: click cards on the field or in hand (total ${boardSel.exact ? "" : "at least "}${boardSel.amount})`;
+      const range = boardSel.min === boardSel.max ? `${boardSel.min}` : `${boardSel.min}–${boardSel.max}`;
+      const done = boardSel.kind === "unselect" ? boardSel.unselectCount : boardPicked.length;
+      return `${title}: click cards on the field or in hand (${done}/${range})`;
+    }
     return prompt?.hint ? res!.desc(prompt.hint) : "Make a choice";
   })();
 
@@ -322,6 +408,10 @@ export default function DuelView({
       actionable={actionable}
       linked={linked}
       chainLinks={chainLinks}
+      selectCards={onBoard ? boardState?.candidates : undefined}
+      pickedCards={onBoard ? boardState?.picked : undefined}
+      // Only clickable while its cards can be chosen.
+      onCardClick={onBoard ? onCardClick : undefined}
       onHover={onHover}
     />
   );
@@ -334,13 +424,17 @@ export default function DuelView({
       actionable={actionable}
       linked={linked}
       chainLinks={chainLinks}
+      selectCards={onBoard ? boardState?.candidates : undefined}
+      pickedCards={onBoard ? boardState?.picked : undefined}
       onCardClick={onCardClick}
       onHover={onHover}
     />
   );
 
   const playerBar = (player: number) => {
-    const lp = duel.players[player].lp;
+    // While an LP change is on its way to the bar, the bar still shows the LP from before it.
+    const pendingLp = duel.fx.find((f) => f.kind === "lp" && f.controller === player);
+    const lp = pendingLp?.fromLp ?? duel.players[player].lp;
     const start = client.hostInfo?.startLp || 8000;
     const t = timeOf(player);
     const active = duel.turnPlayer === player && duel.turn > 0;
@@ -361,10 +455,11 @@ export default function DuelView({
           boxShadow: active ? `inset 0 0 0 1px ${player === me ? "rgba(245,197,24,.6)" : "rgba(190,190,190,.6)"}` : "none",
         }}
       >
-        <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 0, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <Typography variant="body2" title={names[player]} sx={{ fontWeight: 700, flex: "0 0 140px", width: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {names[player]}
         </Typography>
-        <Box sx={{ flex: 1, maxWidth: 200, minWidth: 60 }}>
+        {/* LP bar, LP and timer keep a fixed size, whatever the name or buttons. */}
+        <Box sx={{ flex: "0 0 160px", width: 160 }}>
           <LinearProgress
             variant="determinate"
             value={Math.max(0, Math.min(100, (lp / start) * 100))}
@@ -372,16 +467,27 @@ export default function DuelView({
             sx={{ height: 8, borderRadius: 4 }}
           />
         </Box>
-        <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, minWidth: 64 }}>
+        <Typography data-lp-value={player} variant="body2" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, flex: "0 0 72px", width: 72, whiteSpace: "nowrap" }}>
           {lp} LP
         </Typography>
         {client.hostInfo?.timeLimit ? (
-          <Chip size="small" color={duel.timePlayer === player ? "warning" : "default"} label={`${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`} />
+          <Chip
+            size="small"
+            color={duel.timePlayer === player ? "warning" : "default"}
+            label={`${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`}
+            sx={{ flex: "0 0 56px", width: 56, fontVariantNumeric: "tabular-nums" }}
+          />
         ) : null}
+        {mine && actions.shuffle && (
+          <Button size="small" variant="outlined" color="secondary" onClick={() => client.respond(actions.shuffle!.response)} sx={{ py: 0.25, flex: "0 0 auto", whiteSpace: "nowrap" }}>
+            {actions.shuffle.label}
+          </Button>
+        )}
         <Box sx={{ flex: 1 }} />
         {mine &&
           actions.phase.map((p) => (
-            <Button key={p.label} size="small" variant="contained" color="secondary" onClick={() => client.respond(p.response)} sx={{ py: 0.25 }}>
+            // Phase buttons (BP, MP2, EP): narrow, all the same width.
+            <Button key={p.label} size="small" variant="contained" color="secondary" onClick={() => client.respond(p.response)} sx={{ py: 0.25, minWidth: 0, width: 48, px: 0 }}>
               {p.label}
             </Button>
           ))}
@@ -493,6 +599,9 @@ export default function DuelView({
             overflow: "hidden",
           }}
         >
+        {/* Behind everything in the field window: the moving liquid metal surface (ignores the
+            mouse; zIndex -1 keeps it under the field within the window's own layer). */}
+        <LiquidMetal style={{ zIndex: -1 }} />
         {/* LP bar, hand, field, hand, LP bar as one block, centred in the field window. The LP
             bars are as wide as the field; the hands sit against the field's edges. */}
         <Box ref={setBlock} sx={{ width: boardWidth, maxWidth: "100%", flex: "0 0 auto", display: "flex", flexDirection: "column", alignItems: "stretch" }}>
@@ -508,6 +617,8 @@ export default function DuelView({
             chainLinks={chainLinks}
             selectableZones={placeKeys}
             selectedZones={new Set(placeSel.map(zoneKey))}
+            selectCards={onBoard ? boardState?.candidates : undefined}
+            pickedCards={onBoard ? boardState?.picked : undefined}
             pointedZones={pointedZones}
             glowZones={glowZones}
             picks={duel.materialPicks}
@@ -538,7 +649,7 @@ export default function DuelView({
                   }}
                 >
                   <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5 }}>TURN {duel.turn}</Typography>
-                  <Typography noWrap sx={{ fontSize: 10.5, color: "text.secondary" }}>{res!.phaseName(duel.phase)}</Typography>
+                  <Typography noWrap sx={{ fontSize: 10.5, color: "text.secondary" }}>{res!.phaseShort(duel.phase)}</Typography>
                 </Box>
               ) : undefined
             }
@@ -566,6 +677,30 @@ export default function DuelView({
               <Button size="small" variant="contained" onClick={() => setMinimized(null)}>
                 Back to choice
               </Button>
+            )}
+            {onBoard && boardSel && prompt && (
+              <>
+                <Button size="small" color="inherit" onClick={() => setBoardList(true)}>
+                  Show list
+                </Button>
+                {boardSel.canCancel && (
+                  <Button size="small" onClick={() => client.respond(boardSel.kind === "unselect" ? respond.unselect(null) : respond.cards(null))}>
+                    Cancel
+                  </Button>
+                )}
+                {boardSel.kind === "unselect" && boardSel.canFinish && (
+                  <Button size="small" variant="contained" onClick={() => client.respond(respond.unselect(null))}>
+                    Finish
+                  </Button>
+                )}
+                {/* Only to stop early when fewer than the maximum may be chosen; otherwise picking the
+                    last card continues by itself. */}
+                {boardSel.kind === "cards" && boardSel.min < boardSel.max && boardState?.ok && (
+                  <Button size="small" variant="contained" onClick={() => client.respond(respond.cards(boardPicked))}>
+                    Done ({boardPicked.length})
+                  </Button>
+                )}
+              </>
             )}
             {actions.loose.length > 0 && (
               <Button
@@ -864,4 +999,87 @@ export default function DuelView({
     </Box>
     </FieldWindow.Provider>
   );
+}
+
+type SelectRef = { controller: number; location: number; sequence: number; position?: number; overlay_sequence?: number };
+
+/**
+ * A card prompt that can be answered by clicking the cards themselves: every card to choose
+ * from is on the field or in a hand (not a material, not in a pile). Null otherwise (the
+ * usual pop-up). byCard maps DuelCard id -> its index in the prompt's list (for "unselect":
+ * in its own list, with `unselect` set for cards already picked).
+ */
+function boardSelection(msg: ServerMessage | undefined, duel: DuelState) {
+  if (!msg) return null;
+  const T = OcgMessageType;
+  // Attached Xyz materials come as their monster's zone plus overlay_sequence; they can't be
+  // clicked on the board, so choosing them always uses the pop-up (e.g. detaching materials).
+  const usable = (r: SelectRef) =>
+    (r.location & (LOC.ONFIELD | LOC.HAND)) !== 0 && !(r.location & LOC.OVERLAY) && r.overlay_sequence === undefined;
+  const map = (list: SelectRef[], unselect = false, into = new Map<number, { index: number; unselect: boolean }>()) => {
+    for (let i = 0; i < list.length; i++) {
+      if (!usable(list[i])) return null;
+      const card = duel.getCard(list[i]);
+      if (!card || into.has(card.id)) return null;
+      into.set(card.id, { index: i, unselect });
+    }
+    return into;
+  };
+  if (msg.type === T.SELECT_CARD || msg.type === T.SELECT_TRIBUTE) {
+    const byCard = map(msg.selects);
+    if (!byCard || !byCard.size) return null;
+    const tribute = msg.type === T.SELECT_TRIBUTE;
+    return {
+      kind: "cards" as const,
+      byCard,
+      min: msg.min,
+      max: msg.max,
+      tribute,
+      weights: tribute ? msg.selects.map((c) => c.release_param) : null,
+      canCancel: msg.can_cancel,
+      fixed: [] as number[],
+    };
+  }
+  if (msg.type === T.SELECT_UNSELECT_CARD) {
+    const byCard = map(msg.select_cards);
+    if (!byCard || !byCard.size || !map(msg.unselect_cards, true, byCard)) return null;
+    return {
+      kind: "unselect" as const,
+      byCard,
+      refs: [...msg.select_cards, ...msg.unselect_cards],
+      selectCount: msg.select_cards.length,
+      unselectCount: msg.unselect_cards.length,
+      min: msg.min,
+      max: msg.max,
+      canCancel: msg.can_cancel && !msg.can_finish,
+      canFinish: msg.can_finish,
+      fixed: [] as number[],
+    };
+  }
+  if (msg.type === T.SELECT_SUM) {
+    const byCard = map(msg.selects);
+    if (!byCard || !byCard.size) return null;
+    // Cards that are always included show as picked.
+    const fixed: number[] = [];
+    for (const c of msg.selects_must) {
+      if (!usable(c)) return null;
+      const card = duel.getCard(c);
+      if (!card) return null;
+      fixed.push(card.id);
+    }
+    const exact = msg.select_max === 0;
+    return {
+      kind: "sum" as const,
+      byCard,
+      amounts: msg.selects.map((c) => c.amount),
+      must: msg.selects_must.map((c) => c.amount),
+      amount: msg.amount,
+      exact,
+      min: msg.min,
+      max: msg.max,
+      canCancel: false,
+      fixed,
+    };
+  }
+  return null;
 }

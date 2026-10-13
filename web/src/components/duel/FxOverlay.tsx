@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
-import { CardImage, cardRect, forgetVanish, vanishRect } from "../CardImage";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { CardImage, cardHeight, cardRect, forgetVanish, vanishRect } from "../CardImage";
 import { useApp } from "../AppContext";
 import type { Fx, FxCard } from "@/lib/game/duel";
 import {
   BUMP_HIT,
   BUMP_MS,
+  BUMP_WINDUP,
+  LP_HIT_MS,
+  SHUFFLE_MS,
+  TO_PILE_MS,
   FADE_MS,
+  FUSION_MERGE,
+  FUSION_SWIRL_MS,
   LIFT,
   LINK_FRAME_IN,
   LINK_LEAD,
@@ -35,6 +41,7 @@ const shinyDotStyle = {
   boxShadow: `0 0 3px 1px #ffffff, 0 0 8px 3px #39ff14, 0 0 18px 7px #39ff14aa, 0 0 32px 12px #39ff1455`,
 };
 import { Swirl } from "./fx/Swirl";
+import { WarpCards } from "./fx/WarpCards";
 
 /**
  * Board effects drawn on top of the page. When cards move, vanish or appear is decided
@@ -88,6 +95,10 @@ function lifetime(fx: Fx, tl: SummonTimeline | null): number {
       return 1000;
     case "bump":
       return BUMP_MS + 80;
+    case "toPile":
+      return TO_PILE_MS + 40;
+    case "shuffle":
+      return (fx.delay ?? 0) + SHUFFLE_MS + 40;
     default:
       return (tl?.impact ?? 1500) + 500;
   }
@@ -105,6 +116,25 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
       forgetVanish(fx.cardId);
       onDone(fx.id);
     };
+    if (fx.kind === "lp") {
+      // Gone when the number hits the LP bar: the bar then shows the new LP.
+      const t = setTimeout(finish, reducedMotion() ? 0 : LP_HIT_MS);
+      return () => clearTimeout(t);
+    }
+    if (fx.kind === "shuffle") {
+      // Shuffles the Deck pile itself.
+      const t0 = setTimeout(() => shufflePile(fx.pile ?? ""), fx.delay ?? 0);
+      const t1 = setTimeout(finish, lifetime(fx, null));
+      return () => {
+        clearTimeout(t0);
+        clearTimeout(t1);
+      };
+    }
+    if (fx.kind === "toPile" && document.querySelector(`[data-pile="${fx.pile}"] [data-card-id="${fx.cardId}"]`)) {
+      // It is the pile's top card: it flies there by itself.
+      finish();
+      return;
+    }
     if (fx.kind === "glow") {
       // Drawn by the board in the zone; this only times it out.
       const t = setTimeout(finish, lifetime(fx, null));
@@ -112,7 +142,7 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
     }
     // Runs after the board's layout effects, so card positions are known: where the card
     // is (summons, impacts) or was (materials, destroyed cards).
-    const leaving = fx.kind === "material" || fx.kind === "destroy" || fx.kind === "battle";
+    const leaving = fx.kind === "material" || fx.kind === "destroy" || fx.kind === "battle" || fx.kind === "toPile";
     const r = leaving
       ? vanishRect(fx.cardId)
       : cardRect(fx.cardId) ?? document.querySelector(`[data-card-id="${fx.cardId}"]`)?.getBoundingClientRect();
@@ -126,9 +156,10 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
       // The landing sends a ripple through the field, like a stone dropped into water.
       timers.push(setTimeout(() => ripple(r, fx.tier ?? 1), fx.delay ?? 0));
     }
-    if (fx.kind === "bump") bump(fx.cardId, fx.targetId, fx.toPlayer ?? 1 - fx.controller);
+    if (fx.kind === "bump") bump(fx.cardId, fx.targetId, fx.toPlayer ?? 1 - fx.controller, fx.tier);
     return () => timers.forEach(clearTimeout);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (fx.kind === "lp") return reducedMotion() ? null : <LpChange player={fx.controller} amount={fx.amount ?? 0} />;
   if (!rect) return null;
 
   const flipped = fx.controller !== me;
@@ -148,6 +179,10 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
       return null;
     case "material":
       return <Material fx={fx} rect={rect} flipped={flipped} ghost={ghost(fx, fx.sideways ? rect.height : rect.width)} />;
+    case "toPile":
+      return <ToPile rect={rect} pile={fx.pile ?? ""} bottom={!!fx.bottom} ghost={ghost(fx, fx.sideways ? rect.height : rect.width)} />;
+    case "shuffle":
+      return null;
     case "destroy":
     case "battle": {
       const card = ghost(fx, fx.sideways ? rect.height : rect.width);
@@ -158,8 +193,12 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
       const fp = fallPoint(rect, fx.dir ?? -1);
       const info = res?.cards.get(fx.code);
       switch (fx.kind) {
-        case "fusion":
-          return <FusionIn fx={fx} fp={fp} tl={tl} flipped={flipped} />;
+        case "fusion": {
+          // Each material glows in its own Attribute's colour.
+          const mats = fx.materials ?? [];
+          const colors = mats.map((m) => attributeColor(res?.cards.get(m.code)?.attribute ?? 0));
+          return <FusionIn fx={fx} fp={fp} tl={tl} flipped={flipped} materials={mats} colors={colors} />;
+        }
         case "synchro": {
           let tuner = 0;
           let other = 0;
@@ -186,7 +225,7 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
         case "ritual":
           return <RitualIn fp={fp} tl={tl} />;
         case "link":
-          return <LinkIn code={fx.code} fp={fp} tl={tl} marker={fx.linkMarker ?? info?.linkMarker ?? 0} flipped={flipped} />;
+          return <LinkIn fp={fp} tl={tl} marker={fx.linkMarker ?? info?.linkMarker ?? 0} flipped={flipped} />;
       }
       return null;
     }
@@ -439,12 +478,100 @@ function SphereUp({ rect, color, formed, ghost }: { rect: DOMRect; color: string
 
 /* ---------- step 5: Extra Deck summons ---------- */
 
-/** Fusion: the monster swirls in above its zone (then the card drops, see LandPlan). */
-function FusionIn({ fx, fp, tl, flipped }: { fx: Fx; fp: FallPoint; tl: SummonTimeline; flipped: boolean }) {
+/** Fusion: how long the materials take to appear on their circle. */
+const FUSION_GATHER = 300;
+
+/**
+ * Fusion: the materials' cards appear on a circle above the zone, glowing in their
+ * Attribute's colours, then are bent all together into a whirlpool (inner ends first:
+ * curved blades, then long spiral arms) that turns and sinks into its centre (see WarpCards). When they all
+ * reach it, they become a light, out of which the Fusion Monster swirls in (then the card
+ * drops, see LandPlan).
+ */
+function FusionIn({
+  fx,
+  fp,
+  tl,
+  flipped,
+  materials,
+  colors,
+}: {
+  fx: Fx;
+  fp: FallPoint;
+  tl: SummonTimeline;
+  flipped: boolean;
+  materials: FxCard[];
+  colors: string[];
+}) {
+  // Up to 8 on the circle. Without a material list only the light and the card show.
+  const mats = materials.slice(0, 8);
+  const n = Math.max(1, mats.length);
+  const cardW = fp.width / LIFT.scale * 0.8;
+  const cardH = cardHeight(cardW);
+  const R = Math.max(fp.width, fp.height) * 0.95;
+  // The group's box: the circle with the cards on it, plus room for their glow.
+  const S = 2 * (R + cardH / 2) + 30;
+  const light = colors.length ? "#e7d6ff" : "#ffffff";
   return (
-    <div style={{ ...boxOf(fp), animation: `fxHide 1ms linear ${tl.reveal}ms forwards` }}>
-      <Swirl code={fx.code} width={fp.width} height={fp.height} from={-1} to={0} fadeFrom={0} fadeTo={1} duration={tl.reveal} rotate={flipped ? 180 : 0} />
-    </div>
+    <>
+      <div style={{ position: "absolute", left: fp.cx, top: fp.cy, width: 0, height: 0 }}>
+        {/* The light in the middle, growing as the materials come in. */}
+        <div
+          style={{
+            position: "absolute",
+            left: -R * 0.6,
+            top: -R * 0.6,
+            width: R * 1.2,
+            height: R * 1.2,
+            borderRadius: "50%",
+            background: `radial-gradient(circle, #fff 0%, ${light} 25%, #b58cff88 50%, #b58cff00 72%)`,
+            mixBlendMode: "screen",
+            opacity: 0,
+            animation: `fxFusionLight ${FUSION_MERGE}ms ease-in forwards, fxOut 450ms ease-out ${FUSION_MERGE + 100}ms forwards`,
+          }}
+        />
+        {/* The cards on their circle, bent all together into a whirlpool. */}
+        <div style={{ position: "absolute", left: -S / 2, top: -S / 2 }}>
+          <WarpCards
+            size={S}
+            delay={FUSION_GATHER + 40 * (n - 1)}
+            duration={FUSION_MERGE - FUSION_GATHER - 40 * (n - 1)}
+            cards={mats.map((m, i) => {
+              // Evenly round the circle; two materials sit left and right (the first on the left).
+              const a = (n === 2 ? Math.PI : -Math.PI / 2) + (i / n) * Math.PI * 2;
+              return {
+                code: m.faceDown ? 0 : m.code,
+                x: Math.cos(a) * R,
+                y: Math.sin(a) * R,
+                width: cardW,
+                height: cardH,
+                color: colors[i] || "#b58cff",
+                appearAt: i * 40,
+              };
+            })}
+          />
+        </div>
+        {/* They become one flash of light... */}
+        <Burst size={R * 2} color="#d9b8ffee" at={FUSION_MERGE - 60} />
+      </div>
+      {/* ...out of which the Fusion Monster swirls in. */}
+      {/* Stays a moment past the reveal: it ends as the card itself in the same place, and the
+          board's card (shown from the reveal) takes over without a blank frame between them. */}
+      <div style={{ ...boxOf(fp), animation: `fxHide 1ms linear ${tl.reveal + 150}ms forwards` }}>
+        <Swirl
+          code={fx.code}
+          width={fp.width}
+          height={fp.height}
+          from={-1}
+          to={0}
+          fadeFrom={0}
+          fadeTo={1}
+          duration={FUSION_SWIRL_MS}
+          delay={FUSION_MERGE}
+          rotate={flipped ? 180 : 0}
+        />
+      </div>
+    </>
   );
 }
 
@@ -512,7 +639,8 @@ function SynchroIn({ fp, tl, tuner, other }: { fp: FallPoint; tl: SummonTimeline
           />
         );
       })}
-      {/* Everything turns into a glowing card silhouette, which fades as the card appears. */}
+      {/* Everything turns into a glowing card silhouette, which fades as the card appears
+          (quickly, before the card winds up for its drop). */}
       <div
         style={{
           position: "absolute",
@@ -521,7 +649,7 @@ function SynchroIn({ fp, tl, tuner, other }: { fp: FallPoint; tl: SummonTimeline
           background: `radial-gradient(ellipse at center, #f4fff0 0%, ${NEON_GREEN} 55%, ${NEON_GREEN}aa 100%)`,
           boxShadow: `0 0 18px 6px ${NEON_GREEN}, 0 0 40px 10px ${NEON_GREEN}66`,
           opacity: 0,
-          animation: `fxInScale 300ms ease-out ${glowAt}ms forwards, fxOut 260ms ease-in ${tl.reveal}ms forwards`,
+          animation: `fxInScale 300ms ease-out ${glowAt}ms forwards, fxOut 130ms ease-in ${tl.reveal}ms forwards`,
         }}
       />
     </div>
@@ -646,19 +774,8 @@ function XyzIn({ fp, tl, color, colors }: { fp: FallPoint; tl: SummonTimeline; c
         />
       </div>
       <Sparks rect={{ left: fp.cx - Rv / 2, top: fp.cy - Rv / 2, width: Rv, height: Rv }} color={color} at={last} count={22} />
-      {/* The card appears out of the explosion in the Attribute's light (the card itself is
-          drawn by the board, underneath). */}
-      <div
-        style={{
-          ...boxOf(fp),
-          borderRadius: 6,
-          background: `radial-gradient(ellipse at center, #ffffffcc 0%, ${color}aa 45%, ${color}00 75%)`,
-          boxShadow: `0 0 18px 6px ${color}, 0 0 40px 12px ${color}66`,
-          mixBlendMode: "screen",
-          opacity: 0,
-          animation: `fxRitualLight ${tl.drop - tl.reveal + 120}ms ease-out ${tl.reveal - 120}ms forwards, fxOut 120ms ease-in ${tl.drop}ms forwards`,
-        }}
-      />
+      {/* The card then appears out of the explosion shining in the Attribute's colour: that
+          light is part of the card's own animation (LandPlan.glow), so it stays on it. */}
     </>
   );
 }
@@ -675,22 +792,7 @@ function RitualIn({ fp, tl }: { fp: FallPoint; tl: SummonTimeline }) {
   return (
     <div style={{ position: "absolute", left: fp.cx - S / 2, top: fp.cy - S / 2, width: S, height: S }}>
       <RitualFire size={S} radius={R} stopAt={out} endAt={tl.drop + 200} />
-      {/* Blue light where the card appears: it flares as the card shows and settles into a glow. */}
-      <div
-        style={{
-          position: "absolute",
-          left: S / 2 - fp.width / 2,
-          top: S / 2 - fp.height / 2,
-          width: fp.width,
-          height: fp.height,
-          borderRadius: 6,
-          background: `radial-gradient(ellipse at center, #e6f3ffcc 0%, ${RITUAL_BLUE}99 45%, ${RITUAL_BLUE}00 75%)`,
-          boxShadow: `0 0 18px 6px ${RITUAL_BLUE}, 0 0 40px 12px ${RITUAL_BLUE}66`,
-          mixBlendMode: "screen",
-          opacity: 0,
-          animation: `fxRitualLight ${tl.drop - tl.reveal + 120}ms ease-out ${tl.reveal - 120}ms forwards, fxOut 120ms ease-in ${tl.drop}ms forwards`,
-        }}
-      />
+      {/* The card's blue light is part of its own animation (LandPlan.glow). */}
     </div>
   );
 }
@@ -820,7 +922,17 @@ const LINK_CARD_UNITS = 600;
  * cell) with every arrow dark. The monster's arrows light up one by one, the card appears
  * in the middle, the frame goes, and the card falls into its zone.
  */
-function LinkIn({ code, fp, tl, marker, flipped }: { code: number; fp: FallPoint; tl: SummonTimeline; marker: number; flipped: boolean }) {
+function LinkIn({
+  fp,
+  tl,
+  marker,
+  flipped,
+}: {
+  fp: FallPoint;
+  tl: SummonTimeline;
+  marker: number;
+  flipped: boolean;
+}) {
   // The pictures are square; the card fills LINK_CARD_UNITS of their 2000 units.
   const S = (fp.height * 2000) / LINK_CARD_UNITS;
   const frame = { left: fp.cx - S / 2, top: fp.cy - S / 2, width: S, height: S };
@@ -856,11 +968,8 @@ function LinkIn({ code, fp, tl, marker, flipped }: { code: number; fp: FallPoint
           />
         ))}
       </div>
-      {/* The card appears in the middle of the frame (over it; the board's card is underneath
-          and takes over when it falls). */}
-      <div style={{ ...boxOf(fp), opacity: 0, animation: `fxGrowIn ${grow}ms ease-out ${tl.reveal}ms forwards, fxHide 1ms linear ${tl.drop}ms forwards` }}>
-        <CardImage code={code} width={fp.width} flipped={flipped} />
-      </div>
+      {/* The card grows in in the middle of the frame: that is the board's own card (enter
+          "grow"), drawn above these effects, so it winds up and falls as one. */}
     </>
   );
 }
@@ -872,7 +981,7 @@ function LinkIn({ code, fp, tl, marker, flipped }: { code: number; fp: FallPoint
  * attack), knocks it back a little, and returns to its zone. Uses the card's `translate`
  * property, so its own rotation (defence position, the opponent's side) is kept.
  */
-function bump(cardId: number, targetId: number | undefined, toPlayer: number) {
+function bump(cardId: number, targetId: number | undefined, toPlayer: number, tier?: 1 | 2 | 3) {
   const el = document.querySelector<HTMLElement>(`[data-board] [data-card-id="${cardId}"]`);
   const target =
     targetId !== undefined
@@ -894,13 +1003,21 @@ function bump(cardId: number, targetId: number | undefined, toPlayer: number) {
   const travel = Math.max(0, dist - reach);
   const tx = (dx / dist) * travel;
   const ty = (dy / dist) * travel;
+  // The step back before the rush: away from the target, over half a card.
+  const back = Math.min(a.width, a.height) * 0.65;
+  const bx0 = (dx / dist) * back;
+  const by0 = (dy / dist) * back;
   // Above the other cells while it moves.
   const cell = el.closest<HTMLElement>("[data-cell]");
   const z = cell?.style.zIndex ?? "";
   if (cell) cell.style.zIndex = "30";
   const anim = el.animate(
     [
-      { translate: "0px 0px", scale: "1", easing: "cubic-bezier(.55,0,1,.45)" },
+      // A few steps back first, gathering speed (a little crouched)...
+      { translate: "0px 0px", scale: "1", easing: "ease-out" },
+      { translate: `${-bx0}px ${-by0}px`, scale: "0.93", offset: BUMP_WINDUP * 0.8, easing: "ease-in-out" },
+      { translate: `${-bx0 * 0.9}px ${-by0 * 0.9}px`, scale: "0.95", offset: BUMP_WINDUP, easing: "cubic-bezier(.55,0,1,.45)" },
+      // ...then the rush.
       { translate: `${tx}px ${ty}px`, scale: "1.08", offset: BUMP_HIT, easing: "ease-out" },
       { translate: `${tx * 0.9}px ${ty * 0.9}px`, scale: "1.04", offset: BUMP_HIT + 0.1, easing: "ease-in-out" },
       { translate: "0px 0px", scale: "1" },
@@ -910,6 +1027,13 @@ function bump(cardId: number, targetId: number | undefined, toPlayer: number) {
   anim.onfinish = anim.oncancel = () => {
     if (cell) cell.style.zIndex = z;
   };
+  // The hit sends a wave through the field from where they meet (by the attacker's ATK).
+  if (tier) {
+    const hx = ax + tx;
+    const hy = ay + ty;
+    const at = new DOMRect(hx - a.width / 2, hy - a.height / 2, a.width, a.height);
+    setTimeout(() => ripple(at, tier), BUMP_MS * BUMP_HIT);
+  }
   // The target is knocked back a little when it is hit.
   if (targetId !== undefined) {
     const kx = (dx / dist) * 8;
@@ -926,21 +1050,212 @@ function bump(cardId: number, targetId: number | undefined, toPlayer: number) {
   }
 }
 
+/* ---------- into a pile ---------- */
+
+/**
+ * A card going into a pile it isn't drawn on top of (the bottom of the Deck, shuffled in,
+ * several at once): a copy flies from where it was onto the pile and sinks into it (to the
+ * bottom of the Deck: it slides in underneath).
+ */
+function ToPile({ rect, pile, bottom, ghost }: { rect: DOMRect; pile: string; bottom: boolean; ghost: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const target = document.querySelector<HTMLElement>(`[data-pile="${pile}"]`)?.getBoundingClientRect();
+    if (!el || !target) return;
+    const dx = target.left + target.width / 2 - (rect.left + rect.width / 2);
+    const dy = target.top + target.height / 2 - (rect.top + rect.height / 2);
+    // Ends about the size of a card in the pile.
+    const s = Math.min(1, (target.height - 6) / Math.max(rect.width, rect.height));
+    const under = bottom ? 0.22 * target.height : 0;
+    const a = el.animate(
+      [
+        { transform: "translate(0, 0) scale(1)", opacity: 1, offset: 0 },
+        { transform: `translate(${dx}px, ${dy}px) scale(${s})`, opacity: 1, offset: 0.72, easing: "ease-in" },
+        { transform: `translate(${dx}px, ${dy + under}px) scale(${s * 0.96})`, opacity: 0, offset: 1 },
+      ],
+      { duration: TO_PILE_MS, easing: "cubic-bezier(.3,.6,.3,1)", fill: "forwards" },
+    );
+    return () => a.cancel();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    // Under the pile when it slides to the bottom; over it otherwise.
+    <div ref={ref} style={{ ...boxOf(rect), display: "grid", placeItems: "center", zIndex: bottom ? 0 : 1 }}>
+      {ghost}
+    </div>
+  );
+}
+
+/** A Deck pile being shuffled: its card shifts left and right a few times. */
+function shufflePile(pile: string) {
+  const el = document.querySelector<HTMLElement>(`[data-pile="${pile}"] [data-card-id]`);
+  if (!el) return;
+  el.animate(
+    [
+      { translate: "0px 0px", rotate: "0deg" },
+      { translate: "-9px -2px", rotate: "-6deg", offset: 0.15 },
+      { translate: "8px 1px", rotate: "5deg", offset: 0.35 },
+      { translate: "-7px 0px", rotate: "-4deg", offset: 0.55 },
+      { translate: "5px -1px", rotate: "3deg", offset: 0.75 },
+      { translate: "0px 0px", rotate: "0deg" },
+    ],
+    { duration: SHUFFLE_MS, easing: "ease-in-out" },
+  );
+}
+
+/* ---------- LP changes ---------- */
+
+/** When the LP number has popped up, and when it starts flying to the bar (ms). */
+const LP_SHOWN = 250;
+const LP_FLY_AT = 620;
+
+/**
+ * An LP change: the amount pops up over that player's side of the field (red when LP is lost,
+ * green when gained), waits a moment, then flies into the LP value on their bar. A loss hits
+ * it: the bar is knocked in the direction it came from and flashes red, with a burst. A gain
+ * just lands there with a green glow. The bar shows the new LP once it has arrived (the fx
+ * ends at LP_HIT_MS).
+ */
+function LpChange({ player, amount }: { player: number; amount: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const loss = amount < 0;
+  const color = loss ? "#ff3b3b" : "#3ddc84";
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const bar = document.querySelector<HTMLElement>(`[data-lp="${player}"]`);
+    const value = document.querySelector<HTMLElement>(`[data-lp-value="${player}"]`) ?? bar;
+    const board = document.querySelector<HTMLElement>("[data-board]");
+    if (!el || !bar || !value || !board) return;
+    // Over that player's half of the field (the half next to their LP bar).
+    const b = board.getBoundingClientRect();
+    const barRect = bar.getBoundingClientRect();
+    const below = barRect.top > b.top + b.height / 2;
+    const sx = b.left + b.width / 2;
+    const sy = b.top + b.height * (below ? 0.72 : 0.28);
+    const v = value.getBoundingClientRect();
+    const ex = v.left + v.width / 2;
+    const ey = v.top + v.height / 2;
+    const at = (x: number, y: number) => `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+    const o = (t: number) => t / LP_HIT_MS;
+    el.animate(
+      [
+        { transform: `${at(sx, sy)} scale(.3)`, opacity: 0 },
+        { transform: `${at(sx, sy)} scale(1.15)`, opacity: 1, offset: o(LP_SHOWN * 0.7) },
+        { transform: `${at(sx, sy)} scale(1)`, opacity: 1, offset: o(LP_SHOWN) },
+        { transform: `${at(sx, sy)} scale(1)`, opacity: 1, offset: o(LP_FLY_AT), easing: loss ? "cubic-bezier(.6,0,1,.6)" : "cubic-bezier(.4,0,.6,1)" },
+        { transform: `${at(ex, ey)} scale(${loss ? 0.9 : 0.6})`, opacity: loss ? 1 : 0.2 },
+      ],
+      { duration: LP_HIT_MS, fill: "forwards" },
+    );
+    const t = setTimeout(() => {
+      if (loss) {
+        // A red burst where it hits. On the page itself: this effect ends right now (the bar
+        // then shows the new LP), the burst plays on a little.
+        const burst = document.createElement("div");
+        Object.assign(burst.style, {
+          position: "fixed",
+          left: `${ex - 60}px`,
+          top: `${ey - 60}px`,
+          width: "120px",
+          height: "120px",
+          borderRadius: "50%",
+          background: "radial-gradient(circle, #fff 0%, #ff3b3bee 35%, rgba(0,0,0,0) 70%)",
+          mixBlendMode: "screen",
+          pointerEvents: "none",
+          zIndex: "60",
+        });
+        document.body.appendChild(burst);
+        burst
+          .animate(
+            [
+              { opacity: 0.95, transform: "scale(.3)" },
+              { opacity: 0, transform: "scale(1.4)" },
+            ],
+            { duration: 420, easing: "ease-out" },
+          )
+          .finished.finally(() => burst.remove());
+        // Knocked the way the number was going, and a red flash.
+        const dir = Math.sign(ey - sy) || 1;
+        bar.animate(
+          [
+            { translate: "0px 0px", boxShadow: "0 0 0 2px #ff3b3b, 0 0 22px 6px rgba(255,59,59,.85)" },
+            { translate: `0px ${dir * 7}px`, offset: 0.2 },
+            { translate: `0px ${-dir * 3}px`, offset: 0.45 },
+            { translate: `0px ${dir * 1.5}px`, offset: 0.7 },
+            { translate: "0px 0px", boxShadow: "0 0 0 0 rgba(255,59,59,0)" },
+          ],
+          { duration: 480, easing: "ease-out" },
+        );
+      } else {
+        bar.animate(
+          [
+            { boxShadow: "0 0 0 1px #3ddc84, 0 0 18px 5px rgba(61,220,132,.7)" },
+            { boxShadow: "0 0 0 0 rgba(61,220,132,0)" },
+          ],
+          { duration: 600, easing: "ease-out" },
+        );
+      }
+    }, LP_HIT_MS - 10);
+    return () => clearTimeout(t);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        opacity: 0,
+        fontSize: 34,
+        fontWeight: 900,
+        letterSpacing: 1,
+        fontVariantNumeric: "tabular-nums",
+        color,
+        WebkitTextStroke: "1px rgba(0,0,0,.6)",
+        textShadow: `0 0 6px ${color}, 0 0 16px ${color}aa, 0 2px 4px rgba(0,0,0,.8)`,
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+      }}
+    >
+      {loss ? `−${-amount}` : `+${amount}`}
+    </div>
+  );
+}
+
 /* ---------- landing ---------- */
 
 /**
  * A summoned card hits its zone: the cell dips and bounces back, and the cells around it
  * follow one after another with less and less force, like rings on water. Level 7+
- * hits harder and the wave travels further.
+ * hits harder and the wave travels further; tier 3 (an attack with 4000+ ATK) reaches the
+ * whole field, hits hardest and shakes the field.
+ * Also used for attacks, by the attacker's ATK (see bump).
  */
-function ripple(at: DOMRect, tier: 1 | 2) {
+function ripple(at: DOMRect, tier: 1 | 2 | 3) {
   const cells = document.querySelectorAll<HTMLElement>("[data-board] [data-cell]");
   const cx = at.left + at.width / 2;
   const cy = at.top + at.height / 2;
   const unit = Math.max(at.width, at.height) + 6;
-  const reach = tier === 2 ? 5 : 3;
-  const force = tier === 2 ? 0.17 : 0.11;
-  const duration = tier === 2 ? 820 : 640;
+  // 1 normal, 2 strong (Level 7+ landing), 3 strongest (4000+ ATK hit): the whole field.
+  const reach = [0, 3, 5, 9][tier];
+  const force = [0, 0.11, 0.17, 0.24][tier];
+  const duration = [0, 640, 820, 1000][tier];
+  if (tier === 3) {
+    // The strongest also shakes the whole field.
+    const board = document.querySelector<HTMLElement>("[data-board]");
+    board?.animate(
+      [
+        { translate: "0px 0px" },
+        { translate: "-7px 4px" },
+        { translate: "6px -5px" },
+        { translate: "-5px -3px" },
+        { translate: "4px 4px" },
+        { translate: "-2px 1px" },
+        { translate: "0px 0px" },
+      ],
+      { duration: 420, easing: "ease-out" },
+    );
+  }
   cells.forEach((el) => {
     const r = el.getBoundingClientRect();
     const dx = r.left + r.width / 2 - cx;
@@ -961,7 +1276,7 @@ function ripple(at: DOMRect, tier: 1 | 2) {
         { transform: `translate(${ux * 0.15}px, ${uy * 0.15}px) scale(${1 - amp * 0.18})`, offset: 0.82 },
         { transform: "none", filter: "none" },
       ],
-      { duration, delay: d * (tier === 2 ? 75 : 65), easing: "ease-out" },
+      { duration, delay: d * [0, 65, 75, 85][tier], easing: "ease-out" },
     );
   });
 }
@@ -1171,6 +1486,8 @@ const KEYFRAMES = `
 @keyframes fxOut { from { opacity: 1; } to { opacity: 0; } }
 @keyframes fxDissolve { from { opacity: 1; transform: scale(1); filter: blur(0); } to { opacity: 0; transform: scale(1.35); filter: blur(8px); } }
 @keyframes fxSphereDrop { 0% { opacity: 1; transform: translateY(var(--from)); } 92% { opacity: 1; transform: translateY(0) scale(1.3); } 100% { opacity: 0; transform: translateY(0) scale(1.8); } }
+@keyframes fxFusionGlow { from { filter: drop-shadow(0 0 3px var(--c)) drop-shadow(0 0 8px var(--c)); } to { filter: brightness(2.2) drop-shadow(0 0 6px var(--c)) drop-shadow(0 0 20px var(--c)); } }
+@keyframes fxFusionLight { 0% { opacity: 0; transform: scale(.2); } 30% { opacity: .35; transform: scale(.4); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes fxXyzVortexIn { from { opacity: 0; transform: scale(.3) rotate(90deg); } to { opacity: 1; transform: scale(1) rotate(0deg); } }
 @keyframes fxXyzVortexOut { from { opacity: 1; transform: scale(1); filter: brightness(1); } to { opacity: 0; transform: scale(.15); filter: brightness(2.5); } }
 @keyframes fxGrowIn { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: scale(1); } }
