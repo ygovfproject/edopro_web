@@ -90,6 +90,12 @@ const APPEAR: Record<AppearStyle, [Keyframe, Keyframe, number]> = {
   fade: [{ opacity: 0 }, { opacity: 1 }, 380],
   pop: [{ opacity: 0, transform: "scale(1.35)", filter: "brightness(2.5)" }, { opacity: 1, transform: "scale(1)", filter: "brightness(1)" }, 380],
   twist: [{ opacity: 0, transform: "rotate(-540deg) scale(.1)" }, { opacity: 1, transform: "rotate(0) scale(1)" }, 560],
+  // Out of a burst of white light (a monster placed in a Spell & Trap Zone).
+  light: [
+    { opacity: 0, transform: "scale(1.15)", filter: "brightness(4) drop-shadow(0 0 10px #ffffff) drop-shadow(0 0 26px #ffffff)" },
+    { opacity: 1, transform: "scale(1)", filter: "brightness(1) drop-shadow(0 0 0px #ffffff) drop-shadow(0 0 0px #ffffff)" },
+    620,
+  ],
 };
 
 /**

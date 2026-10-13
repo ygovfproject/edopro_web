@@ -1134,11 +1134,6 @@ export class DuelState {
               msg.card,
             );
         }
-        if (to.location === 0) {
-          // Card left the game entirely (tokens).
-          this.detach(card);
-          break;
-        }
         const fromPos = from.position ?? card.position;
         // Cards just sent away (GY, banished, Deck): stand-in materials for a Fusion Summon whose
         // materials aren't marked as such (e.g. Mask Change sends its target by effect).
@@ -1236,6 +1231,30 @@ export class DuelState {
             faceDown: !!(pos & POS.FACEDOWN),
             sideways: from.location === LOC.MZONE && !!(pos & POS.DEFENSE),
           });
+        }
+        if (to.location === 0) {
+          // Left the game entirely (a token). If nothing else shows it going (destroyed, used as
+          // material), it shatters where it was.
+          if (from.location & LOC.ONFIELD && !motion.vanish.has(card.id)) {
+            motion.vanish.add(card.id);
+            this.addFx({
+              kind: "destroy",
+              cardId: card.id,
+              code: msg.card || card.code,
+              controller: from.controller,
+              faceDown: !!(fromPos & POS.FACEDOWN),
+              sideways: from.location === LOC.MZONE && !!(fromPos & POS.DEFENSE),
+            });
+          }
+          this.detach(card);
+          if (this.attack && (this.attack.attacker === card || this.attack.target === card)) this.attack = null;
+          break;
+        }
+        // A monster placed in a Spell & Trap Zone (as a Continuous Spell, an Equip...) from
+        // anywhere but the hand appears there in white light.
+        if (to.location === LOC.SZONE && from.location !== LOC.HAND && from.location !== LOC.SZONE) {
+          const t = this.fmt.info?.(msg.card || card.code)?.type ?? card.type;
+          if (t & TYPE_BITS.MONSTER) motion.appear.set(card.id, { hold: 0, style: "light" });
         }
         // The server blanks the code when the destination is hidden from us.
         card.code = msg.card;

@@ -6,7 +6,7 @@
  */
 
 /** How a hidden card shows up once its hold time is over. */
-export type AppearStyle = "fade" | "pop" | "twist";
+export type AppearStyle = "fade" | "pop" | "twist" | "light";
 
 /** How a summoned card arrives in its zone. */
 export interface LandPlan {
