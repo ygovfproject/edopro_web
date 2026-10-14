@@ -626,6 +626,10 @@ export default function DuelView({
             onCardClick={onCardClick}
             onZoneClick={onZoneClick}
             onPileClick={(player, location) => setPileView({ player, location })}
+            // Never a Main Deck; an Extra Deck only our own, while playing (not watching).
+            canOpenPile={(player, location) =>
+              location !== LOC.DECK && (location !== LOC.EXTRA || (player === me && !client.isObserver))
+            }
             onMaterialsClick={(card) => setMaterialsOf(card.id)}
             onHover={onHover}
             oppHand={handsInBoard ? oppHand(handWidth) : undefined}

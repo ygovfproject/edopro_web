@@ -11,6 +11,7 @@ import {
   LP_HIT_MS,
   SHUFFLE_MS,
   TO_PILE_MS,
+  TRIBUTE_MS,
   FADE_MS,
   FUSION_MERGE,
   FUSION_SWIRL_MS,
@@ -97,6 +98,9 @@ function lifetime(fx: Fx, tl: SummonTimeline | null): number {
       return BUMP_MS + 80;
     case "toPile":
       return TO_PILE_MS + 40;
+    case "tribute":
+      // The last flames still rise and fade after the card is gone.
+      return TRIBUTE_MS + 650;
     case "shuffle":
       return (fx.delay ?? 0) + SHUFFLE_MS + 40;
     default:
@@ -142,7 +146,7 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
     }
     // Runs after the board's layout effects, so card positions are known: where the card
     // is (summons, impacts) or was (materials, destroyed cards).
-    const leaving = fx.kind === "material" || fx.kind === "destroy" || fx.kind === "battle" || fx.kind === "toPile";
+    const leaving = fx.kind === "material" || fx.kind === "destroy" || fx.kind === "battle" || fx.kind === "toPile" || fx.kind === "tribute";
     const r = leaving
       ? vanishRect(fx.cardId)
       : cardRect(fx.cardId) ?? document.querySelector(`[data-card-id="${fx.cardId}"]`)?.getBoundingClientRect();
@@ -183,6 +187,8 @@ function FxItem({ fx, me, onDone }: { fx: Fx; me: number; onDone: (id: number) =
       return <ToPile rect={rect} pile={fx.pile ?? ""} bottom={!!fx.bottom} ghost={ghost(fx, fx.sideways ? rect.height : rect.width)} />;
     case "shuffle":
       return null;
+    case "tribute":
+      return <Melt rect={rect} ghost={ghost(fx, fx.sideways ? rect.height : rect.width)} />;
     case "destroy":
     case "battle": {
       const card = ghost(fx, fx.sideways ? rect.height : rect.width);
@@ -1346,6 +1352,196 @@ const SHARDS: { clip: string; dx: number; dy: number; rot: number }[] = [
   { clip: "42% 44%, 100% 40%, 100% 100%, 66% 100%", dx: 0.8, dy: 0.7, rot: -30 },
   { clip: "42% 44%, 66% 100%, 30% 100%", dx: 0.05, dy: 1, rot: 60 },
 ];
+
+/**
+ * Tribute: white fire burns along the card's border (like the Ritual ring's flames, but
+ * white, and following the card's edge) while the card itself dissolves away in a soft,
+ * grainy fade. The fire dies down after the card is gone. Runs for TRIBUTE_MS.
+ */
+function Melt({ rect, ghost }: { rect: DOMRect; ghost: ReactNode }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const fireRef = useRef<HTMLCanvasElement>(null);
+  const w = rect.width;
+  const h = rect.height;
+  // The flames get room around the card, most of it above (fire rises).
+  const pad = Math.max(w, h) * 0.5;
+  const above = pad * 1.6;
+  const fw = w + pad * 2;
+  const fh = h + above + pad * 0.5;
+  useEffect(() => {
+    const el = cardRef.current;
+    const fire = fireRef.current;
+    const fctx = fire?.getContext("2d");
+    const mask = document.createElement("canvas");
+    const mctx = mask.getContext("2d");
+    if (!el || !fire || !fctx || !mctx) return;
+    // The dissolve is worked out on a coarse grid (2 px per cell) and scaled up smoothly.
+    const GW = Math.max(16, Math.round(w / 2));
+    const GH = Math.max(16, Math.round(h / 2));
+    mask.width = GW;
+    mask.height = GH;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    fire.width = Math.round(fw * dpr);
+    fire.height = Math.round(fh * dpr);
+    fctx.scale(dpr, dpr);
+
+    // When each cell goes (0..1): blotchy noise, so the card thins out in patches and grain.
+    const seed = Math.random() * 100;
+    const hash = (x: number, y: number) => {
+      const s = Math.sin(x * 127.1 + y * 311.7 + seed) * 43758.5453;
+      return s - Math.floor(s);
+    };
+    const noise = (x: number, y: number) => {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      const fx = x - ix;
+      const fy = y - iy;
+      const ux = fx * fx * (3 - 2 * fx);
+      const uy = fy * fy * (3 - 2 * fy);
+      const a = hash(ix, iy) + (hash(ix + 1, iy) - hash(ix, iy)) * ux;
+      const b = hash(ix, iy + 1) + (hash(ix + 1, iy + 1) - hash(ix, iy + 1)) * ux;
+      return a + (b - a) * uy;
+    };
+    const gone = new Float32Array(GW * GH);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let y = 0; y < GH; y++) {
+      for (let x = 0; x < GW; x++) {
+        const nx = (x / GW) * 4;
+        const ny = (y / GW) * 4;
+        const t = noise(nx, ny) * 0.55 + noise(nx * 3 + 7, ny * 3 + 3) * 0.3 + hash(x * 0.37, y * 0.71) * 0.15;
+        gone[y * GW + x] = t;
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
+      }
+    }
+    for (let i = 0; i < gone.length; i++) gone[i] = (gone[i] - lo) / (hi - lo || 1);
+    const maskData = mctx.createImageData(GW, GH);
+
+    // Flames rise from every point of the card's border.
+    const unit = Math.max(w, h) / 75;
+    const perim = 2 * (w + h);
+    const onBorder = (d: number): [number, number, number, number] => {
+      // A point at distance d along the border, and which way is outwards there.
+      if (d < w) return [d, 0, 0, -1];
+      if (d < w + h) return [w, d - w, 1, 0];
+      if (d < 2 * w + h) return [w - (d - w - h), h, 0, 1];
+      return [0, h - (d - 2 * w - h), -1, 0];
+    };
+    type P = { x: number; y: number; vx: number; vy: number; life: number; age: number; r: number; seed: number };
+    const ps: P[] = [];
+    const t0 = performance.now();
+    let last = t0;
+    let raf = 0;
+    let hidden = false;
+    const stopAt = TRIBUTE_MS - 150;
+    const frame = (now: number) => {
+      const t = now - t0;
+      const dt = Math.min(48, now - last);
+      last = now;
+      // The card dissolves over the burn, starting a moment after the fire catches.
+      if (!hidden) {
+        const k = Math.min(1, Math.max(0, (t - 120) / (TRIBUTE_MS - 220)));
+        const p = -0.2 + 1.45 * k;
+        const m = maskData.data;
+        for (let i = 0; i < gone.length; i++) {
+          const left = gone[i] - p;
+          m[i * 4 + 3] = left <= 0 ? 0 : left >= 0.2 ? 255 : (left / 0.2) * 255;
+        }
+        mctx.putImageData(maskData, 0, 0);
+        const url = `url(${mask.toDataURL()})`;
+        el.style.setProperty("mask-image", url);
+        el.style.setProperty("-webkit-mask-image", url);
+        if (k >= 1) {
+          hidden = true;
+          el.style.visibility = "hidden";
+        }
+      }
+      // The fire catches quickly, burns, and stops feeding at stopAt.
+      const grow = Math.min(1, t / 150);
+      if (t < stopAt) {
+        const n = Math.round((dt / 1000) * 700 * (0.4 + 0.6 * grow));
+        for (let i = 0; i < n; i++) {
+          const [bx, by, ox, oy] = onBorder(Math.random() * perim);
+          const jitter = (Math.random() - 0.5) * 3 * unit;
+          ps.push({
+            x: pad + bx + ox * jitter,
+            y: above + by + oy * jitter,
+            vx: ox * 6 * unit + (Math.random() - 0.5) * 8 * unit,
+            vy: -(25 + Math.random() * 40) * unit + oy * 4 * unit,
+            life: 220 + Math.random() * 320,
+            age: 0,
+            r: (1.6 + Math.random() * 2.2) * unit,
+            seed: Math.random() * 1000,
+          });
+        }
+      }
+      // Fade the last frame instead of clearing it, so each flame streaks as it rises.
+      fctx.globalCompositeOperation = "destination-out";
+      fctx.fillStyle = `rgba(0,0,0,${Math.min(1, 0.3 * (dt / 16))})`;
+      fctx.fillRect(0, 0, fw, fh);
+      // A soft white glow along the burning border.
+      const fade = t < stopAt ? grow : Math.max(0, 1 - (t - stopAt) / 220);
+      fctx.globalCompositeOperation = "lighter";
+      if (fade > 0) {
+        fctx.save();
+        // (Faint: it builds up over the frames, which only fade, never clear.)
+        fctx.strokeStyle = `rgba(255,255,255,${0.05 * fade})`;
+        fctx.shadowColor = "#ffffff";
+        fctx.shadowBlur = 12 * unit;
+        fctx.lineWidth = 2 * unit;
+        fctx.strokeRect(pad, above, w, h);
+        fctx.restore();
+      }
+      for (let i = ps.length - 1; i >= 0; i--) {
+        const q = ps[i];
+        q.age += dt;
+        const a = q.age / q.life;
+        if (a >= 1) {
+          ps.splice(i, 1);
+          continue;
+        }
+        q.x += (q.vx + Math.sin((q.age + q.seed) / 70) * 10 * unit) * (dt / 1000);
+        q.y += q.vy * (1 + 1.6 * a) * (dt / 1000);
+        const r = q.r * (1 - a * 0.75);
+        // White-hot at the base, cooling to a pale silver as it fades.
+        const [cr, cg, cb] = a < 0.25 ? [255, 255, 255] : a < 0.55 ? [225, 232, 245] : [165, 175, 195];
+        const alpha = (a < 0.1 ? a / 0.1 : 1 - (a - 0.1) / 0.9) * 0.75;
+        const g = fctx.createRadialGradient(q.x, q.y, 0, q.x, q.y, r);
+        g.addColorStop(0, `rgba(${cr},${cg},${cb},${alpha})`);
+        g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+        fctx.fillStyle = g;
+        fctx.beginPath();
+        fctx.arc(q.x, q.y, r, 0, Math.PI * 2);
+        fctx.fill();
+      }
+      if (t < TRIBUTE_MS || ps.length) raf = requestAnimationFrame(frame);
+      else fctx.clearRect(0, 0, fw, fh);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div style={boxOf(rect)}>
+      <div
+        ref={cardRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "grid",
+          placeItems: "center",
+          maskSize: "100% 100%",
+          WebkitMaskSize: "100% 100%",
+          maskRepeat: "no-repeat",
+          WebkitMaskRepeat: "no-repeat",
+        }}
+      >
+        {ghost}
+      </div>
+      <canvas ref={fireRef} style={{ position: "absolute", left: -pad, top: -above, width: fw, height: fh }} />
+    </div>
+  );
+}
 
 function Shatter({ box, card, rect }: { box: CSSProperties; card: React.ReactNode; rect: DOMRect }) {
   const size = Math.max(rect.width, rect.height);

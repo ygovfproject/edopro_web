@@ -165,6 +165,10 @@ export const LINK_FRAME_IN = Math.round(260 * LINK_SPEED);
 export const HAND_STEP = 220;
 
 /** A card flying into a pile it isn't drawn on top of, and a Deck being shuffled (ms). */
+/** A tributed monster melts away in white fire from its edges inwards (ms). */
+export const TRIBUTE_MS = 1150;
+/** What comes after a Tribute (the Tribute Summon itself...) waits this long. */
+export const TRIBUTE_HOLD = 700;
 export const TO_PILE_MS = 460;
 export const SHUFFLE_MS = 520;
 

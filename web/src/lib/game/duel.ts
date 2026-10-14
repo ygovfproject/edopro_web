@@ -10,6 +10,8 @@ import {
   LP_HIT_MS,
   SHUFFLE_MS,
   TO_PILE_MS,
+  TRIBUTE_HOLD,
+  TRIBUTE_MS,
   HAND_STEP,
   RITUAL_BLUE,
   DROP_MS,
@@ -221,7 +223,8 @@ export interface Fx extends FxCard {
     | "bump"
     | "lp"
     | "toPile"
-    | "shuffle";
+    | "shuffle"
+    | "tribute";
   /** Bump: the attack target (DuelCard id), or none for a direct attack at `toPlayer`. */
   targetId?: number;
   toPlayer?: number;
@@ -251,6 +254,7 @@ export interface Fx extends FxCard {
 
 const REASON = {
   DESTROY: 0x1,
+  RELEASE: 0x2,
   MATERIAL: 0x8,
   BATTLE: 0x20,
   SPSUMMON: 0x800,
@@ -1157,6 +1161,27 @@ export class DuelState {
           });
           if (this.sent.length > 20) this.sent.splice(0, this.sent.length - 20);
         }
+        // Tributed monsters (Tribute Summons, costs, Ritual Summons...) melt away in white fire
+        // where they were, then show up where they went.
+        if (
+          msg.reason & REASON.RELEASE &&
+          from.location & (LOC.MZONE | LOC.HAND) &&
+          !motion.vanish.has(card.id) &&
+          (from.location === LOC.MZONE ||
+            (this.fmt.info?.(msg.card || card.code)?.type ?? card.type) & TYPE_BITS.MONSTER)
+        ) {
+          motion.vanish.add(card.id);
+          motion.appear.set(card.id, { hold: TRIBUTE_MS - 250, style: "fade" });
+          this.addFx({
+            kind: "tribute",
+            cardId: card.id,
+            code: msg.card || card.code,
+            controller: from.controller,
+            faceDown: !!(from.location === LOC.MZONE && fromPos & POS.FACEDOWN),
+            sideways: from.location === LOC.MZONE && !!(fromPos & POS.DEFENSE),
+          });
+          this.hold = Math.max(this.hold, TRIBUTE_HOLD);
+        }
         // Materials, from anywhere (field, hand, but also GY, Deck, banished: Miracle Fusion,
         // Fusion Destiny...). Only those on the field or in the hand are animated where they were.
         if (
@@ -1173,7 +1198,7 @@ export class DuelState {
             from.location & (LOC.ONFIELD | LOC.HAND)
               ? materialKind(msg.reason)
               : null;
-          if (kind) {
+          if (kind && !motion.vanish.has(card.id)) {
             // Animated where it was (step 2), then fades in where it went.
             motion.vanish.add(card.id);
             motion.appear.set(card.id, { hold: MATERIAL_HOLD, style: "fade" });

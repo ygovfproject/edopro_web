@@ -41,6 +41,8 @@ export interface BoardProps {
   onCardClick: (card: DuelCard, el: HTMLElement) => void;
   onZoneClick: (zone: Zone) => void;
   onPileClick: (player: number, location: number) => void;
+  /** Whether a pile's list can be opened (no peeking into a Deck, or an Extra Deck that isn't ours). */
+  canOpenPile: (player: number, location: number) => boolean;
   onHover: (card: DuelCard | null, code: number) => void;
   /** Click on an Xyz Monster's material count: show the materials. */
   onMaterialsClick?: (card: DuelCard) => void;
@@ -217,7 +219,9 @@ export default function Board(p: BoardProps) {
                 trackId={card.id}
                 chainLinks={p.chainLinks.get(card.id)}
                 onClick={selectable ? undefined : (e) => p.onCardClick(card, e.currentTarget)}
-                onHover={() => p.onHover(card, hiddenFromMe ? 0 : card.code)}
+                // A set card of the opponent's that was revealed to us (its code is known) shows in
+                // the card details too, even though it stays face-down on the field.
+                onHover={() => p.onHover(card, card.code)}
                 onLeave={() => p.onHover(null, 0)}
               />
               {pick?.shape === "glow" && <Box sx={glowPickVeil} />}
@@ -334,6 +338,8 @@ export default function Board(p: BoardProps) {
     const top = list[list.length - 1];
     const faceUpTop = top && (location === LOC.GRAVE || (location === LOC.REMOVED && !isFaceDown(top)) || (location === LOC.EXTRA && !isFaceDown(top)));
     const hasAction = list.some((c) => p.actionable.has(c.id));
+    // A card in it we can use (rare for a Deck) always opens it.
+    const openable = hasAction || p.canOpenPile(player, location);
     const links = list.flatMap((c) => p.chainLinks.get(c.id) ?? []);
     return (
       <Box
@@ -341,7 +347,7 @@ export default function Board(p: BoardProps) {
         // Cards coming into a hand from here start from this pile (see useMoveAnimation).
         data-pile={`${player}-${location}`}
         key={`pile-${player}-${location}`}
-        onClick={() => p.onPileClick(player, location)}
+        onClick={openable ? () => p.onPileClick(player, location) : undefined}
         sx={{
           gridColumn,
           gridRow,
@@ -355,7 +361,7 @@ export default function Board(p: BoardProps) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          cursor: "pointer",
+          cursor: openable ? "pointer" : "default",
           bgcolor: "rgba(255,255,255,0.03)",
         }}
       >
